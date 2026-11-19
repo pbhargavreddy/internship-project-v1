@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+openai
+streamlit
+requests
+python-dotenv
+sentence-transformers
+chromadb
+pypdf
+torch
+pytest
+python-docx
+openpyxl
+Pillow

@@ -1,0 +1,44 @@
+/*
+ * styles/main.css
+ * All custom styling for the Research Assistant frontend.
+ * Loaded once per run by utils/styles.py::load_css().
+ * Colours use currentColor / opacity where possible so they work in
+ * both light and dark themes defined in .streamlit/config.toml.
+ */
+
+/* ── Vertical spacers ─────────────────────────────────────────────────── */
+.ra-spacer-idle    { height: 14vh; }   /* search bar sits lower when idle   */
+.ra-spacer-active  { height: 2vh;  }   /* output expands downwards          */
+.ra-spacer-sidebar { height: 8vh;  }
+
+/* ── Small helper label above attached-file chips ─────────────────────── */
+.ra-hint {
+    font-size: 0.75rem;
+    opacity: 0.65;
+    margin: 4px 0 2px 2px;
+}
+
+/* ── "No preview available" flash message (auto-hides after 2s) ───────── */
+@keyframes ra-flash-hide {
+    to { opacity: 0; height: 0; padding: 0; overflow: hidden; }
+}
+.ra-flash {
+    color: #dc2626;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 4px 2px;
+    animation: ra-flash-hide 0.2s ease-in 2s forwards;
+}
+
+/* ── Text excerpt inside the preview dialog ───────────────────────────── */
+.ra-preview-text {
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 12px;
+    background-color: rgba(125, 125, 125, 0.08);
+    border-radius: 8px;
+    font-size: 0.88rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
