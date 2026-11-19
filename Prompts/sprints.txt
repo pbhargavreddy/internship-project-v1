@@ -1,0 +1,11 @@
+Sprint 1: Document Ingestion & Vector Retrieval Pipeline (PDF parsing, semantic chunking, embeddings, ChromaDB vector search).
+
+Sprint 2: Custom PyTorch Cross-Encoder Reranker (nn.Module, custom loss, training loop, two-stage retrieval integration).
+
+Sprint 3: Fine-Tuning with QLoRA & Hugging Face (Domain dataset formatting, LoRA configuration, 4-bit quantization, SFTTrainer).
+
+Sprint 4: Autonomous ReAct Agent with Tools & Memory (Conversation state, RAG tool, arXiv tool, Python code execution sandbox).
+
+Sprint 5: Benchmarking & Guardrail Layer (Chain-of-Thought prompts, ROUGE/BLEU/BERTScore evaluators, hallucination checks).
+
+Sprint 6: API Serving & Telemetry (FastAPI streaming endpoints, UI, latency and token metrics).

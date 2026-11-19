@@ -1,0 +1,10 @@
+langchain
+dotenv
+# re
+dataclasses
+pathlib
+pypdf
+# io
+# tempfile
+uuid
+pytest

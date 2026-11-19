@@ -1,0 +1,37 @@
+You are an expert AI engineer building the foundation of an AI Research Assistant.
+
+### Objective
+Implement Sprint 1: A modular Document Ingestion and Vector Retrieval Pipeline that extracts text from academic PDFs, splits it into semantic chunks with overlap, generates dense embeddings, and indexes them in a local ChromaDB vector database.
+
+### Directory Structure to Create
+research_assistant/
+├── src/
+│   ├── __init__.py
+│   ├── ingestion/
+│   │   ├── __init__.py
+│   │   ├── pdf_loader.py       # Extracts clean text and metadata from PDF files
+│   │   └── chunker.py          # Section-aware or token-based sliding-window text chunker
+│   └── retrieval/
+│       ├── __init__.py
+│       ├── embeddings.py       # Hugging Face / SentenceTransformer embedding wrapper
+│       └── vector_store.py     # ChromaDB client handling collection creation, upsert, and query
+├── tests/
+│   ├── __init__.py
+│   └── test_ingestion.py       # Test script verifying end-to-end ingestion and querying
+└── requirements.txt
+
+### Requirements & Technical Constraints
+1. `requirements.txt`: Include `sentence-transformers`, `chromadb`, `pypdf`, `torch`, and `pytest`.
+2. `pdf_loader.py`: Use `pypdf` to extract text page-by-page. Capture metadata per chunk: `{"source": filename, "page": page_number}`.
+3. `chunker.py`: Implement a chunking class with configurable `chunk_size=500` tokens and `chunk_overlap=50` tokens. Strip excessive whitespace and page-break artifacts.
+4. `embeddings.py`: Wrap `sentence-transformers/all-mpnet-base-v2` (or lightweight `all-MiniLM-L6-v2`) with a clean class providing `embed_documents(list[str])` and `embed_query(str)`.
+5. `vector_store.py`:
+   - Initialize persistent ChromaDB storage in `./data/chroma_db`.
+   - Implement `add_documents(chunks, metadatas, ids)`.
+   - Implement `similarity_search(query_text, top_k=5)` returning chunk text, metadata, and cosine distance scores.
+6. `tests/test_ingestion.py`: Include a test that creates a mock PDF or uses a sample research text, indexes it, queries it with a semantic question, and asserts that the top result contains the relevant sentence with a cosine similarity score > 0.6.
+
+### Rules
+- Write clean, modular, production-ready Python with type hints and docstrings.
+- Do NOT generate code for downstream features (no agents, no fine-tuning, no UI yet).
+- Provide explicit shell commands to run the test suite and verify completion.
