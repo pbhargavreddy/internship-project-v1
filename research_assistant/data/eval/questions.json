@@ -1,0 +1,22 @@
+[
+  {
+    "question": "What challenge did the dehazing paper's method win, and on which metrics?",
+    "reference": "The method won the NTIRE 2024 Dense and NonHomogeneous Dehazing Challenge, achieving the best PSNR, SSIM and MOS."
+  },
+  {
+    "question": "Describe the two-branch architecture used in the dehazing paper.",
+    "reference": "One branch uses a high-level prior model as an encoder to extract high-level features from the image; the second is a lightweight network tailored to extract low-level features from hazy images. The features of both branches are fused."
+  },
+  {
+    "question": "PLACEHOLDER: What dataset does the dehazing paper train and evaluate on?",
+    "reference": "PLACEHOLDER: replace with the reference answer from the paper."
+  },
+  {
+    "question": "PLACEHOLDER: What loss functions are used to train the dehazing model?",
+    "reference": "PLACEHOLDER: replace with the reference answer from the paper."
+  },
+  {
+    "question": "PLACEHOLDER: What limitations or future work does the dehazing paper mention?",
+    "reference": "PLACEHOLDER: replace with the reference answer from the paper."
+  }
+]

@@ -4,49 +4,14 @@ llm_researcher.py
 LLM API client that generates a structured markdown research report for a
 given topic.
 
-Configured entirely via environment variables so the same code works with:
-  • OpenAI          (LLM_BASE_URL=https://api.openai.com/v1)
-  • Gemini compat   (LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai)
-  • Groq            (LLM_BASE_URL=https://api.groq.com/openai/v1)
-  • Ollama (local)  (LLM_BASE_URL=http://localhost:11434/v1, LLM_API_KEY=ollama)
+The model comes from ``backend.llm.get_llm()``: an OpenAI-compatible endpoint.
 """
 
 from __future__ import annotations
 
-import os
 import textwrap
-from pathlib import Path
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
-# Load .env from the research_assistant/ root (two levels up from this file)
-_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
-load_dotenv(dotenv_path=_ENV_PATH, override=False)
-
-
-# ---------------------------------------------------------------------------
-# Client factory  (created once per process)
-# ---------------------------------------------------------------------------
-
-def _build_client() -> OpenAI:
-    api_key = os.environ.get("LLM_API_KEY", "")
-    base_url = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
-    if not api_key:
-        raise EnvironmentError(
-            "LLM_API_KEY is not set. Copy .env.example → .env and fill in your key."
-        )
-    return OpenAI(api_key=api_key, base_url=base_url)
-
-
-_client: OpenAI | None = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = _build_client()
-    return _client
+from backend.llm import get_llm
 
 
 # ---------------------------------------------------------------------------
@@ -90,25 +55,14 @@ def run_research_query(topic: str) -> str:
         A Markdown string containing the full research report.
 
     Raises:
-        EnvironmentError: If LLM_API_KEY is not configured.
+        EnvironmentError: If LLM_PROVIDER=api and LLM_API_KEY is not configured.
         openai.OpenAIError: On API-level failures (rate limit, auth, etc.).
     """
     if not topic or not topic.strip():
         raise ValueError("topic must be a non-empty string")
 
-    model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-    client = _get_client()
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _USER_TEMPLATE.format(topic=topic.strip())},
-        ],
-        temperature=0.4,
-        max_tokens=2048,
-    )
-
-    report = response.choices[0].message.content or ""
-    return report.strip()
-
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": _USER_TEMPLATE.format(topic=topic.strip())},
+    ]
+    return get_llm().generate(messages, max_tokens=2048, temperature=0.4)

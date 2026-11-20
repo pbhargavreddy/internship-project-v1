@@ -12,3 +12,14 @@ pytest
 python-docx
 openpyxl
 Pillow
+pydantic>=2
+pydantic-settings>=2
+httpx>=0.27
+arxiv>=2.1
+pymupdf>=1.24
+tiktoken>=0.7
+python-multipart
+peft>=0.22
+evaluate
+rouge-score
+bert-score

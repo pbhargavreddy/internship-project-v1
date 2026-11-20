@@ -42,3 +42,25 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+/* ── Agent chat (app.py): faithfulness badge + citations ──────────────── */
+.sp-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #fff;
+    margin: 4px 0;
+}
+.sp-badge-good { background-color: #16a34a; }
+.sp-badge-mid  { background-color: #d97706; }
+.sp-badge-bad  { background-color: #dc2626; }
+.sp-badge-none { background-color: rgba(125, 125, 125, 0.6); }
+.sp-badge-model { background-color: #4f46e5; margin-left: 6px; }
+.sp-badge-fallback { background-color: #b45309; margin-left: 6px; }
+.sp-citations {
+    font-size: 0.85rem;
+    opacity: 0.85;
+    margin: 4px 0 0 0;
+}

@@ -1,0 +1,142 @@
+=== 2026-11-20T13:28:01+00:00 session=s2 step=1 finish_reason=None chars=54
+error: Invalid Action JSON (unbalanced braces). Use Action: {"tool": "<name>", "args": {...}}
+Thought: oops
+Action: {"tool": "rag_search", "args": {
+
+=== 2026-11-20T13:31:40+00:00 session=s2 step=1 finish_reason=None chars=54
+error: Invalid Action JSON (unbalanced braces). Use Action: {"tool": "<name>", "args": {...}}
+Thought: oops
+Action: {"tool": "rag_search", "args": {
+
+=== 2026-11-20T13:34:48+00:00 session=4c6b92dfcd3a4c77 step=1 finish_reason=stop chars=0
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+<empty reply>
+
+=== 2026-11-20T13:34:49+00:00 session=4c6b92dfcd3a4c77 step=2 finish_reason=stop chars=1577
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+Here are five recent papers on image dehazing that you can explore:
+
+| # | Title | Year | Authors | Link |
+|---|-------|------|---------|------|
+| 1 | **Real-World Remote Sensing Image Dehazing: Benchmark and Baseline** | 2025 | Zeng‑Hui Zhu, Wei Lu, Si‑Bao Chen, *et al.* | [arXiv](https://arxiv.org/abs/2503.17966v2) • [PDF](https://arxiv.org/pdf/2503.17966v2) |
+| 2 | **Vision Transformers for Single Image Dehazing** | 2022 | Yuda Song, Zhu‑Qing He, Hui Qian, *et al.* | [Semantic Scholar](https://www.semanticscholar.org/paper/37246e26163cdd0f5ddd1ea47a5a5019dead8abb) • [PDF](https://arxiv.org/pdf/2204.03883) |
+| 3 | **Dual-Scale Single Image Dehazing Via Neural Augmentation** | 2022 | Zhengguo Li, Chaobing Zheng, Haiyan Shu, *et al.* | [arXiv](https://arxiv.org/abs/2209.05913v1) • [PDF](https://arxiv.org/pdf/2209.05913v1) |
+| 4 | **Benchmarking Single-Image Dehazing and Beyond** | 2017 | Boyi Li, Wen‑Qi Ren, Dengpan Fu, *et al.* | [Semantic Scholar](https://www.semanticscholar.org/paper/abf75b81b96ff2cd262086675deba55f907108db) • [PDF](https://arxiv.org/pdf/1712.04143) |
+| 5 | **PAD‑Net: A Perception‑Aided Single Image Dehazing Network** | 2018 | Yu Liu, Guanlong Zhao | [arXiv](https://arxiv.org/abs/1805.03146v1) • [PDF](https://arxiv.org/pdf/1805.03146v1) |
+
+These papers cover a range of approaches, from benchmark datasets and baseline methods for remote‑sensing imagery to transformer‑based models, dual‑scale neural augmentation, comprehensive benchmarking studies, and perception‑driven loss functions. Feel free to download the PDFs for full details.
+
+=== 2026-11-20T13:34:49+00:00 session=4c6b92dfcd3a4c77 step=1-reask finish_reason=stop chars=0
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+<empty reply>
+
+=== 2026-11-20T13:34:50+00:00 session=4c6b92dfcd3a4c77 step=2 finish_reason=stop chars=0
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+<empty reply>
+
+=== 2026-11-20T13:34:50+00:00 session=4c6b92dfcd3a4c77 step=2-reask finish_reason=stop chars=0
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+<empty reply>
+
+=== 2026-11-20T13:34:54+00:00 session=4c6b92dfcd3a4c77 step=3 finish_reason=stop chars=104
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+Thought: The user wants a summary of R6.pdf, so I will call the summarize_papers tool for that document.
+
+=== 2026-11-20T13:35:16+00:00 session=4c6b92dfcd3a4c77 step=4 finish_reason=stop chars=1053
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+**Summary of R6.pdf**
+
+**Objective**  
+The paper proposes a novel algorithm for image dehazing that aims to achieve high accuracy while keeping computational costs low【Doc 1, Sec 4.2】.
+
+**Method**  
+An efficient implementation of the dehazing algorithm is realized on a PYNQ board, a low‑cost development platform optimized for deep‑learning inference. The authors detail the haze‑removal method, hardware configuration on the PYNQ, and comparisons with other embedded devices such as the Jetson Nano, reporting PSNR (dB) performance metrics【Doc 1, Sec 4】, 【Doc 1, Sec 5.3】, 【Doc 1, Sec PSNR (dB)】.
+
+**Results**  
+Experimental evaluations compare the dehazing performance across three hardware platforms, demonstrating the proposed method’s speed and quality advantages【Doc 1, Sec 6】.
+
+**Conclusion**  
+The study introduces a new parallel architecture enabling real‑time image dehazing and validates its effectiveness on multiple embedded platforms, highlighting its potential for practical deployment in resource‑constrained environments【Doc 1, Sec 7】.
+
+=== 2026-11-20T13:36:44+00:00 session=4c6b92dfcd3a4c77 step=1 finish_reason=stop chars=0
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+<empty reply>
+
+=== 2026-11-20T13:37:10+00:00 session=4c6b92dfcd3a4c77 step=2 finish_reason=stop chars=1659
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+**Papers on Image Dehazing**
+
+1. **Real-World Remote Sensing Image Dehazing: Benchmark and Baseline** (2025) – Zeng‑Hui Zhu, Wei Lu, Si‑Bao Chen et al.  
+   *[arXiv:2503.17966v2](https://arxiv.org/abs/2503.17966v2)* – PDF: <https://arxiv.org/pdf/2503.17966v2>
+
+2. **Dual-Scale Single Image Dehazing Via Neural Augmentation** (2022) – Zhengguo Li, Chaobing Zheng, Haiyan Shu et al.  
+   *[arXiv:2209.05913v1](https://arxiv.org/abs/2209.05913v1)* – PDF: <https://arxiv.org/pdf/2209.05913v1>
+
+3. **PAD‑Net: A Perception‑Aided Single Image Dehazing Network** (2018) – Yu Liu, Guanlong Zhao.  
+   *[arXiv:1805.03146v1](https://arxiv.org/abs/1805.03146v1)* – PDF: <https://arxiv.org/pdf/1805.03146v1>
+
+4. **A GAN‑Based Input‑Size Flexibility Model for Single Image Dehazing** (2021) – Shichao Kan, Yue Zhang, Fanghui Zhang et al.  
+   *[arXiv:2102.09796v2](https://arxiv.org/abs/2102.09796v2)* – PDF: <https://arxiv.org/pdf/2102.09796v2>
+
+5. **Benchmarking Single Image Dehazing and Beyond** (2017) – Boyi Li, Wenqi Ren, Dengpan Fu et al.  
+   *[arXiv:1712.04143v4](https://arxiv.org/abs/1712.04143v4)* – PDF: <https://arxiv.org/pdf/1712.04143v4>
+
+6. **Model‑Based Single Image Deep Dehazing** (2021) – Zhengguo Li, Chaobing Zheng, Haiyan Shu et al.  
+   *[arXiv:2111.10943v3](https://arxiv.org/abs/2111.10943v3)* – PDF: <https://arxiv.org/pdf/2111.10943v3>
+
+7. **Equivariant Learning for Unsupervised Image Dehazing** (2026) – Zhang Wen, Jiangwei Xie, Dongdong Chen.  
+   *[arXiv:2601.13986v1](https://arxiv.org/abs/2601.13986v1)* – PDF: <https://arxiv.org/pdf/2601.13986v1>
+
+*(The remaining results in the search were unrelated to dehazing, so they are omitted.)*
+
+=== 2026-11-20T13:37:24+00:00 session=4c6b92dfcd3a4c77 step=3 finish_reason=stop chars=596
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+**Additional Guidance**
+
+The `paper_search` tool limits the number of returned results to a maximum of 10 per call. To explore more papers on image dehazing you can:
+
+1. **Run additional searches with different keywords** (e.g., “single image dehazing”, “deep learning dehazing”, “haze removal transformer”).  
+2. **Use the `ingest=True` option** to download the PDFs of the top results and then query their full text with `rag_search` for deeper information.  
+
+If you’d like me to perform any of these actions, just let me know the specific query or whether to ingest the current set of papers.
+
+=== 2026-11-20T13:38:29+00:00 session=4c6b92dfcd3a4c77 step=4 finish_reason=stop chars=564
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+**Additional Image Dehazing Papers Found**
+
+- **Dual‑Scale Single Image Dehazing Via Neural Augmentation** (2022) – Zhengguo Li, Chaobing Zheng, Haiyan Shu et al.  
+  *[arXiv:2209.05913v1](https://arxiv.org/abs/2209.05913v1)* – PDF: <https://arxiv.org/pdf/2209.05913v1>
+
+- **Real‑World Remote Sensing Image Dehazing: Benchmark and Baseline** (2025) – Zeng‑Hui Zhu, Wei Lu, Si‑Bao Chen et al.  
+  *[arXiv:2503.17966v2](https://arxiv.org/abs/2503.17966v2)* – PDF: <https://arxiv.org/pdf/2503.17966v2>
+
+*(The other returned results were unrelated to image dehazing.)*
+
+=== 2026-11-20T13:38:39+00:00 session=4c6b92dfcd3a4c77 step=4-reask finish_reason=stop chars=634
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+**Further Image‑Dehazing Papers (additional relevant results)**  
+
+1. **Dual‑Scale Single Image Dehazing Via Neural Augmentation** (2022) – Zhengguo Li, Chaobing Zheng, Haiyan Shu et al.  
+   *[arXiv:2209.05913v1](https://arxiv.org/abs/2209.05913v1)* – PDF: <https://arxiv.org/pdf/2209.05913v1>
+
+2. **Real‑World Remote Sensing Image Dehazing: Benchmark and Baseline** (2025) – Zeng‑Hui Zhu, Wei Lu, Si‑Bao Chen et al.  
+   *[arXiv:2503.17966v2](https://arxiv.org/abs/2503.17966v2)* – PDF: <https://arxiv.org/pdf/2503.17966v2>
+
+*(The remaining items returned by the search were not directly about image dehazing, so they are omitted.)*
+
+=== 2026-11-20T13:40:03+00:00 session=4c6b92dfcd3a4c77 step=1 finish_reason=stop chars=0
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+<empty reply>
+
+=== 2026-11-20T13:40:07+00:00 session=4c6b92dfcd3a4c77 step=2 finish_reason=stop chars=252
+error: Reply must contain either 'Action: {...}' or 'Final Answer: ...'.
+**Relative improvement**
+
+\[
+\frac{82.4 - 79.1}{79.1} \times 100 \approx \mathbf{4.17\%}
+\]
+
+**Performance comparison plot**
+
+![Performance Comparison](/home/bhargav/Documents/internship-project-v1/research_assistant/data/plots/1b0e9f39_comparison.png)
+

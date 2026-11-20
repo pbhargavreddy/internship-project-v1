@@ -79,3 +79,29 @@ def open_chat(chat: dict) -> None:
 def add_project(name: str) -> None:
     """Add a new project to the top of the list."""
     st.session_state["projects"].insert(0, {"id": str(uuid.uuid4()), "name": name})
+
+
+# ── Agent chat (app.py) ───────────────────────────────────────────────────────
+
+_AGENT_DEFAULTS: dict[str, object] = {
+    "agent_messages": [],   # list of {"role", "content", "result"}
+    "agent_uploaded": [],   # names of files already sent to /documents/upload
+}
+
+
+def init_agent_session() -> None:
+    """Initialise agent-chat keys; the session_id is created once per browser session."""
+    for key, val in _AGENT_DEFAULTS.items():
+        st.session_state.setdefault(key, list(val) if isinstance(val, list) else val)
+    st.session_state.setdefault("agent_session_id", uuid.uuid4().hex[:16])
+
+
+def add_agent_message(role: str, content: str, result: dict | None = None) -> None:
+    """Append a chat message (``result`` is the full /agent/chat response for answers)."""
+    st.session_state["agent_messages"].append({"role": role, "content": content, "result": result})
+
+
+def new_agent_session() -> None:
+    """Start a fresh conversation (new backend memory)."""
+    st.session_state["agent_messages"] = []
+    st.session_state["agent_session_id"] = uuid.uuid4().hex[:16]
