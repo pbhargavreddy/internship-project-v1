@@ -15,7 +15,7 @@ import threading
 from typing import Protocol
 
 from backend.config import get_settings
-from backend.llm.chain import AllModelsFailedError, ChatReply, FallbackChain, get_chain
+from backend.llm.chain import AllModelsFailedError, ChatReply, FallbackChain, get_chain, rate_limit_waits
 from backend.runtime import timed
 
 
@@ -68,6 +68,12 @@ class ApiLLM:
         self._local.reply = None
         self._local.finish_reason = None
         _turn_usage.set({"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+        rate_limit_waits.set([])
+
+    @property
+    def turn_rate_limit_waits(self) -> list[float]:
+        """Seconds waited this turn because every chain model was rate-limited."""
+        return list(rate_limit_waits.get() or [])
 
     @property
     def turn_usage(self) -> dict[str, int]:

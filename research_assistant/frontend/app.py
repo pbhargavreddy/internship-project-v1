@@ -292,7 +292,7 @@ def _render_papers(papers: list[dict], key: str) -> None:
                 st.rerun()  # refresh the sidebar's document list
 
 
-NOTE_LABELS = {"reask": "Re-ask", "final_thought": "Final thought", "step_limit": "Step limit", "routing": "Routing", "degraded": "Degraded mode", "standalone": "Standalone question"}
+NOTE_LABELS = {"reask": "Re-ask", "final_thought": "Final thought", "step_limit": "Step limit", "routing": "Routing", "degraded": "Degraded mode", "standalone": "Standalone question", "rate_limit": "Rate limited, retrying…"}
 
 
 def _render_step(i: int, step: dict) -> None:

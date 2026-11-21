@@ -144,7 +144,7 @@ class AgentNote(BaseModel):
     """A non-tool event in a turn, for the UI's agent log (re-asks, final thought, routing)."""
 
     step: int = Field(..., description="Shown before this step number (len(steps) + 1 = after the last step)")
-    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone")
+    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone | rate_limit")
     text: str
 
 
@@ -473,6 +473,14 @@ class ReActAgent:
             max_tokens=self.step_max_tokens, temperature=0.0, **self._gen_kwargs,
         )
 
+    def _note_rate_limit_waits(self, notes: list[AgentNote], step: int) -> None:
+        """Add a "Rate limited, retrying…" note for each chain wait not yet noted this turn."""
+        waits = getattr(self.llm, "turn_rate_limit_waits", None) or []
+        noted = sum(1 for n in notes if n.kind == "rate_limit")
+        for wait in waits[noted:]:
+            notes.append(AgentNote(step=step, kind="rate_limit",
+                                   text=f"Rate limited, retrying… (every model was cooling down; waited {wait:.0f} s)"))
+
     def _step_reply(
         self, messages: list[dict[str, str]], session_id: str, step: int | str,
         notes: list[AgentNote] | None = None, at_step: int = 0,
@@ -588,6 +596,7 @@ class ReActAgent:
         for _ in range(self.max_steps):
             step_start = time.perf_counter()
             _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1, notes, len(steps) + 1, fallback)
+            self._note_rate_limit_waits(notes, len(steps) + 1)
             if parsed.final is not None:
                 answer = parsed.final
                 if parsed.thought:
@@ -628,6 +637,7 @@ class ReActAgent:
             notes.append(AgentNote(step=len(steps) + 1, kind="step_limit",
                                    text=f"Step limit ({self.max_steps}) reached; asked for a final answer from the observations so far."))
             reply, parsed = self._step_reply(messages, session_id, "forced-final", notes, len(steps) + 1, fallback)
+            self._note_rate_limit_waits(notes, len(steps) + 1)
             if parsed.thought:
                 notes.append(AgentNote(step=len(steps) + 1, kind="final_thought", text=truncate(parsed.thought, NOTE_CHARS)))
             if parsed.final is None and parsed.error is None:  # it asked for another tool
@@ -678,7 +688,9 @@ class ReActAgent:
         log.warning("All agent models failed; answering in degraded mode: %s", exc)
         session = self.store.load(session_id)
         tools = {t.name: t for t in self.tool_factory(session)}
-        notes = [AgentNote(step=1, kind="degraded", text=truncate(str(exc), NOTE_CHARS))]
+        notes: list[AgentNote] = []
+        self._note_rate_limit_waits(notes, 1)  # it may have waited once before giving up
+        notes.append(AgentNote(step=1, kind="degraded", text=truncate(str(exc), NOTE_CHARS)))
         steps: list[AgentStep] = []
         retrieved: list[tuple[int, Chunk]] = []
         model_used, latency = DEGRADED_LABEL, None

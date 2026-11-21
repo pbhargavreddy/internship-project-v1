@@ -106,3 +106,51 @@ def test_429_on_primary_uses_fallback_account_with_same_model(caplog: pytest.Log
     chain.agent_chat(messages=[])
     assert calls == ["key-primary", "key-friend", "key-friend"]  # primary skipped while cooling down
     assert "key-primary" not in caplog.text and "key-friend" not in caplog.text
+
+
+def _cooling_chain(retry_after: str, now: list[float], sleeps: list[float]) -> tuple[FallbackChain, list[str]]:
+    calls: list[str] = []
+    queue = {"a": [_err(429, headers={"retry-after": retry_after}), "a-ok"],
+             "b": [_err(429, headers={"retry-after": retry_after}), "b-ok"]}
+    specs = [ModelSpec(provider="groq", model=m, base_url="https://x", api_key="k") for m in queue]
+
+    def factory(spec: ModelSpec) -> Any:
+        def create(model: str, **_kw: Any) -> Any:
+            calls.append(model)
+            item = queue[model].pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return _ok(item)
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    def sleep(s: float) -> None:
+        sleeps.append(s)
+        now[0] += s
+
+    return FallbackChain(specs=specs, client_factory=factory, clock=lambda: now[0], sleep=sleep, max_wait_s=20), calls
+
+
+def test_all_models_cooling_down_briefly_waits_once_and_retries() -> None:
+    from backend.llm.chain import rate_limit_waits
+
+    now, sleeps = [0.0], []
+    chain, calls = _cooling_chain("8", now, sleeps)
+    rate_limit_waits.set([])
+    reply = chain.agent_chat(messages=[])
+    assert reply.text == "a-ok" and calls == ["a", "b", "a"]
+    assert sleeps == [8.5] and rate_limit_waits.get() == [8.5]
+
+
+def test_long_retry_after_does_not_wait() -> None:
+    now, sleeps = [0.0], []
+    chain, _ = _cooling_chain("44", now, sleeps)
+    with pytest.raises(AllModelsFailedError):
+        chain.agent_chat(messages=[])
+    assert sleeps == []
+
+
+def test_request_too_large_does_not_wait() -> None:
+    chain, _ = _chain({"a": [_err(429, headers={"retry-after": "5"})], "b": [_err(413, "Request too large")]}, [0.0])
+    chain._sleep = lambda s: pytest.fail("must not wait when a model failed for a non-rate-limit reason")
+    with pytest.raises(AllModelsFailedError):
+        chain.agent_chat(messages=[])

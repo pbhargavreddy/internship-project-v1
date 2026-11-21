@@ -17,6 +17,7 @@ unchanged. When every model fails, :class:`AllModelsFailedError` is raised.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
 import threading
@@ -88,7 +89,9 @@ def _ratelimit_headers(headers: Any) -> dict[str, str]:
     return {h.removeprefix("x-ratelimit-"): headers[h] for h in RATELIMIT_HEADERS if h in headers}
 
 
-
+# Waits this turn spent on "every model is cooling down" (seconds), for the UI's agent steps.
+# Reset per turn by ApiLLM.begin_turn; a ContextVar so tool worker threads share it.
+rate_limit_waits: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar("rate_limit_waits", default=None)
 
 
 class AllModelsFailedError(RuntimeError):
@@ -142,6 +145,9 @@ class FallbackChain:
         specs: Chain entries. Defaults to :func:`parse_chain` on the current settings.
         client_factory: Builds an OpenAI-compatible client for a spec (injected by tests).
         clock: Monotonic clock in seconds (injected by tests).
+        sleep: Sleep function (injected by tests).
+        max_wait_s: Longest "all models cooling down" wait before retrying once. Defaults to
+            ``settings.rate_limit_max_wait_s``; 0 disables waiting.
     """
 
     def __init__(
@@ -149,11 +155,15 @@ class FallbackChain:
         specs: list[ModelSpec] | None = None,
         client_factory: Callable[[ModelSpec], Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        max_wait_s: float | None = None,
     ) -> None:
         self.specs: list[ModelSpec] = specs if specs is not None else parse_chain(get_settings())
         self._factory = client_factory or (lambda s: openai.OpenAI(
             base_url=s.base_url, api_key=s.api_key, timeout=CALL_TIMEOUT_S, max_retries=0))
         self._clock = clock
+        self._sleep = sleep
+        self.max_wait_s: float = max_wait_s if max_wait_s is not None else get_settings().rate_limit_max_wait_s
         self._clients: dict[tuple[str, str, str], Any] = {}
         self._exhausted_until: dict[tuple[str, str, str], float] = {}
         self._lock = threading.Lock()
@@ -167,7 +177,37 @@ class FallbackChain:
     def exhausted(self, spec: ModelSpec) -> bool:
         return self._clock() < self._exhausted_until.get(spec.state_key, float("-inf"))
 
+    def _cooldown_wait(self) -> float | None:
+        """Seconds until the first model is usable, if EVERY model is cooling down after a 429."""
+        now = self._clock()
+        remaining = [self._exhausted_until.get(s.state_key, float("-inf")) - now for s in self.specs]
+        if not remaining or any(r <= 0 for r in remaining):
+            return None  # some model failed for another reason (413, 5xx, ...): waiting won't help
+        return min(remaining)
+
     def agent_chat(self, reasoning_effort: str | None = None, **kwargs: Any) -> ChatReply:
+        """:meth:`_try_chain`; if every model is cooling down for at most ``max_wait_s``,
+        wait once and try the chain again instead of failing.
+
+        Raises:
+            AllModelsFailedError: If every model failed or is rate-limited (after the one wait).
+            openai.APIError: Errors that a different model wouldn't fix (e.g. a bad request).
+        """
+        try:
+            return self._try_chain(reasoning_effort, **kwargs)
+        except AllModelsFailedError:
+            wait = self._cooldown_wait()
+            if wait is None or wait > self.max_wait_s:
+                raise
+        wait += 0.5  # Retry-After is rounded; don't arrive a moment early
+        log.warning("Every agent model is rate-limited; waiting %.1f s, then retrying once", wait)
+        waits = rate_limit_waits.get()
+        if waits is not None:
+            waits.append(round(wait, 1))
+        self._sleep(wait)
+        return self._try_chain(reasoning_effort, **kwargs)
+
+    def _try_chain(self, reasoning_effort: str | None = None, **kwargs: Any) -> ChatReply:
         """``chat.completions.create(**kwargs)`` on the first model that works.
 
         Args:

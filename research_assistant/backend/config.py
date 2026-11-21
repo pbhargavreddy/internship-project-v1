@@ -106,6 +106,7 @@ class Settings(BaseSettings):
     agent_obs_max_chars: int = 4000  # any tool result sent back to the model
     rag_obs_max_chars: int = 3000  # rag_search: top chunks only, up to this many chars in total
     agent_request_token_budget: int = 6000  # prompt tokens per request; history trimmed first, then old tool results
+    rate_limit_max_wait_s: float = 20.0  # all models cooling down for <= this: wait once and retry (0 = never)
     agent_output_dir: Path = Path("data/plots")  # python_interpreter PNGs, served at /plots
     agent_raw_log: Path = Path("data/logs/agent_raw.log")  # raw LLM replies that failed to parse
     python_timeout_seconds: float = 15.0
