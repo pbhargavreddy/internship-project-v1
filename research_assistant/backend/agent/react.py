@@ -598,6 +598,11 @@ class ReActAgent:
             routed = RoutedAnswer(answer=summary, model_used=tools[SUMMARY_TOOL].model_used or api_llm_label())
         else:
             routed = self._route_final(standalone or message, answer, pdf_turn, retrieved, python_outputs)
+        usage = getattr(self.llm, "turn_usage", None)
+        if usage is not None:
+            log.info("Turn usage chat=%s: llm_calls=%d prompt_tokens=%d completion_tokens=%d total=%d",
+                     session_id, usage["calls"], usage["prompt_tokens"], usage["completion_tokens"],
+                     usage["prompt_tokens"] + usage["completion_tokens"])
         last = getattr(self.llm, "last_reply", None)
         if last is not None and routed.model_used == api_llm_label():
             routed.model_used = f"{'Groq ' if last.model.provider == 'groq' else ''}{last.model.short_name}"

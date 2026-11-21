@@ -71,6 +71,24 @@ class ChatReply(BaseModel):
     finish_reason: str | None
     model: ModelSpec
     fallback: bool  # True if a model earlier in the chain was skipped or failed
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    ratelimit: dict[str, str] = {}  # Groq x-ratelimit-* / retry-after response headers
+
+
+RATELIMIT_HEADERS = (
+    "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests",
+    "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens", "retry-after",
+)
+
+
+def _ratelimit_headers(headers: Any) -> dict[str, str]:
+    if headers is None:
+        return {}
+    return {h.removeprefix("x-ratelimit-"): headers[h] for h in RATELIMIT_HEADERS if h in headers}
+
+
+
 
 
 class AllModelsFailedError(RuntimeError):
@@ -169,11 +187,22 @@ class FallbackChain:
                 failures.append(f"{spec.key}: rate-limited")
                 continue
             extra = {"reasoning_effort": reasoning_effort} if reasoning_effort and "gpt-oss" in spec.model else {}
+            fingerprint = spec.state_key[1]
+            completions = self._client(spec).chat.completions
             try:
-                resp = self._client(spec).chat.completions.create(model=spec.model, **kwargs, **extra)
+                raw_api = getattr(completions, "with_raw_response", None)  # absent on test doubles
+                if raw_api is not None:
+                    raw = raw_api.create(model=spec.model, **kwargs, **extra)
+                    resp, headers = raw.parse(), _ratelimit_headers(raw.headers)
+                else:
+                    resp, headers = completions.create(model=spec.model, **kwargs, **extra), {}
             except Exception as exc:  # noqa: BLE001 — classified below
                 if not _should_fall_through(exc):
                     raise
+                if isinstance(exc, openai.APIStatusError) and exc.status_code == 429:
+                    # Groq's message names the limit: "... on tokens per minute (TPM): Limit .., Used .., Requested .."
+                    log.warning("LLM 429 model=%s acct=%s headers=%s msg=%s", spec.key, fingerprint,
+                                _ratelimit_headers(exc.response.headers), str(exc)[:400])
                 if isinstance(exc, openai.RateLimitError):
                     cooldown = _retry_after(exc)
                     with self._lock:
@@ -187,8 +216,14 @@ class FallbackChain:
             if failures:
                 log.warning("Agent answer from fallback model %s after: %s", spec.key, "; ".join(failures)[:500])
             choice = resp.choices[0]
+            usage = getattr(resp, "usage", None)
+            prompt_toks = getattr(usage, "prompt_tokens", None)
+            completion_toks = getattr(usage, "completion_tokens", None)
+            log.info("LLM call model=%s acct=%s prompt_tokens=%s completion_tokens=%s ratelimit=%s",
+                     spec.key, fingerprint, prompt_toks, completion_toks, headers)
             return ChatReply(text=(choice.message.content or "").strip(), finish_reason=choice.finish_reason,
-                             model=spec, fallback=fallback)
+                             model=spec, fallback=fallback, prompt_tokens=prompt_toks,
+                             completion_tokens=completion_toks, ratelimit=headers)
         raise AllModelsFailedError("All agent models failed: " + ("; ".join(failures) or "chain is empty"))
 
 

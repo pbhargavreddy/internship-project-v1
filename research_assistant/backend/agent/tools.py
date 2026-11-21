@@ -26,6 +26,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, ClassVar
 
@@ -514,7 +515,8 @@ class SummarizePapersTool(Tool):
 
         with timed("summarize", doc_id=doc_id, sections=len(groups)):
             with ThreadPoolExecutor(max_workers=min(MAX_SECTION_WORKERS, len(groups))) as pool:
-                parts = list(pool.map(lambda g: self._summarize_section(*g), groups))
+                ctx = contextvars.copy_context()  # keeps the per-turn LLM usage counter
+                parts = list(pool.map(lambda g: ctx.copy().run(self._summarize_section, *g), groups))
 
         self.model_used = self._model_label(parts)
         body = "\n\n".join(f"### {p.heading}\n{p.text}" for p in parts)

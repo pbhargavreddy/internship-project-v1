@@ -10,6 +10,7 @@ that module is for the notebooks only. ``LLM_PROVIDER=local`` fails settings val
 
 from __future__ import annotations
 
+import contextvars
 import threading
 from typing import Protocol
 
@@ -21,14 +22,15 @@ from backend.runtime import timed
 class LLM(Protocol):
     """Anything that turns chat messages into a reply."""
 
-    def begin_turn(self) -> None:
-        """Forget this thread's last reply (threadpool threads are reused across requests)."""
-        self._local.reply = None
-        self._local.finish_reason = None
-
     def generate(
         self, messages: list[dict[str, str]], max_tokens: int = 512, temperature: float = 0.0
     ) -> str: ...
+
+
+# Per-turn usage: a ContextVar (not thread-local) so tool worker threads started with
+# ``contextvars.copy_context()`` add to the same counter.
+_turn_usage: contextvars.ContextVar[dict[str, int] | None] = contextvars.ContextVar("turn_usage", default=None)
+_usage_lock = threading.Lock()
 
 
 class ApiLLM:
@@ -60,6 +62,18 @@ class ApiLLM:
         """This thread's most recent reply, including which chain model produced it."""
         return getattr(self._local, "reply", None)
 
+    def begin_turn(self) -> None:
+        """Start a turn: forget this thread's last reply (threadpool threads are reused across
+        requests) and reset the per-turn usage counter."""
+        self._local.reply = None
+        self._local.finish_reason = None
+        _turn_usage.set({"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+
+    @property
+    def turn_usage(self) -> dict[str, int]:
+        """LLM calls and tokens since :meth:`begin_turn` in this context (incl. tool worker threads)."""
+        return dict(_turn_usage.get() or {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+
     def generate(
         self,
         messages: list[dict[str, str]],
@@ -89,6 +103,12 @@ class ApiLLM:
             )
         self._local.finish_reason = reply.finish_reason
         self._local.reply = reply
+        usage = _turn_usage.get()
+        if usage is not None:
+            with _usage_lock:
+                usage["calls"] += 1
+                usage["prompt_tokens"] += reply.prompt_tokens or 0
+                usage["completion_tokens"] += reply.completion_tokens or 0
         return reply.text
 
 
