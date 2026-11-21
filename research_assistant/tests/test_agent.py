@@ -11,8 +11,14 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+import httpx
+import openai
+import pytest
+from pydantic import BaseModel
+
 from backend.agent import ReActAgent, Session, SessionStore, Tool, run_python
-from backend.agent.tools import PythonInterpreterTool, RagSearchTool
+from backend.agent.react import FINAL_RETRY_PROMPT
+from backend.agent.tools import PaperRef, PythonInterpreterTool, RagSearchTool
 from backend.config import Settings
 from backend.ingestion import Chunk
 from backend.llm.router import FinetunedRouter
@@ -210,4 +216,60 @@ def test_no_tool_turn_still_returns_agent_log_notes(tmp_path: Path) -> None:
     assert "finish_reason=stop" in result.notes[0].text and "<empty>" in result.notes[0].text
     assert result.notes[1].text == "just a greeting"
     assert result.notes[2].text.startswith("Final answer by ")
+
+
+# --- Groq "Tool choice is none" 400 handling ---------------------------------
+
+def _tool_call_400() -> openai.BadRequestError:
+    resp = httpx.Response(400, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
+    return openai.BadRequestError("Error code: 400 - Tool choice is none, but model called a tool", response=resp, body=None)
+
+
+def test_tool_call_400_retries_in_plain_text(tmp_path: Path) -> None:
+    def script(messages: list[dict[str, str]]) -> str:
+        if messages[-1]["content"] == FINAL_RETRY_PROMPT:
+            return "plain text answer"
+        raise _tool_call_400()
+
+    result = _agent(FakeLLM(script), tmp_path).chat("g1", "find papers on attention")
+    assert result.answer == "plain text answer"
+
+
+def test_tool_call_400_twice_falls_back_to_papers(tmp_path: Path) -> None:
+    ref = PaperRef(id="arxiv:1706.03762", title="Attention Is All You Need", year=2017,
+                   authors=["Vaswani"], url="https://arxiv.org/abs/1706.03762", source="arxiv")
+
+    class FakePaperTool(Tool):
+        name = "paper_search"
+        description = "fake"
+        args_model = BaseModel
+
+        def __init__(self) -> None:
+            self.papers = [ref]
+
+        def run(self, args: BaseModel) -> str:
+            return "1. [Attention Is All You Need](https://arxiv.org/abs/1706.03762)"
+
+    calls = iter([f'Thought: search\nAction: {json.dumps({"tool": "paper_search", "args": {}})}'])
+
+    def script(_messages: list[dict[str, str]]) -> str:
+        reply = next(calls, None)
+        if reply is None:
+            raise _tool_call_400()
+        return reply
+
+    agent = ReActAgent(llm=FakeLLM(script), store=SessionStore(tmp_path), tool_factory=lambda s: [FakePaperTool()],
+                       router=FinetunedRouter(settings=Settings(_env_file=None)))
+    result = agent.chat("g2", "find papers on attention")
+    assert "[Attention Is All You Need](https://arxiv.org/abs/1706.03762)" in result.answer
+
+
+def test_other_bad_request_still_raises(tmp_path: Path) -> None:
+    resp = httpx.Response(400, request=httpx.Request("POST", "https://x"))
+
+    def script(_messages: list[dict[str, str]]) -> str:
+        raise openai.BadRequestError("context length exceeded", response=resp, body=None)
+
+    with pytest.raises(openai.BadRequestError):
+        _agent(FakeLLM(script), tmp_path).chat("g3", "hi")
 

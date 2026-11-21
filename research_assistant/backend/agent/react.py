@@ -28,6 +28,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterable
 from typing import Any
 
+import openai
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.agent.memory import Citation, Session, SessionStore, Turn
@@ -52,6 +53,8 @@ CURRENT_PREFIX = "CURRENT user message:\n"
 SUMMARY_TOOL = "summarize_papers"
 MAX_LISTED_DOCS = 30
 PYTHON_TOOL = "python_interpreter"
+FINAL_RETRY_PROMPT = "Write your final answer now in plain text using the tool results above. Do not call any tools."
+_TOOL_CALL_400 = ("Tool choice is none", "tool_use_failed")
 
 
 SYSTEM_TEMPLATE = """You are ScholarPulse, a research assistant that reasons step by step and calls tools.
@@ -293,6 +296,69 @@ def log_raw_reply(path: Path, session_id: str, step: int | str, finish_reason: s
         log.warning("Could not write raw reply log %s: %s", path, exc)
 
 
+def _is_tool_call_400(exc: Exception) -> bool:
+    """True for Groq's 400 when gpt-oss emits a native tool call on a no-tools request."""
+    return isinstance(exc, openai.BadRequestError) and any(m in str(exc) for m in _TOOL_CALL_400)
+
+
+def groq_final_answer(
+    llm: LLM,
+    messages: list[dict[str, str]],
+    fallback: Callable[[], str],
+    **gen_kwargs: Any,
+) -> str:
+    """One agent completion that survives Groq's "Tool choice is none, but model called a tool" 400.
+
+    The agent sends no ``tools``, which Groq treats as ``tool_choice="none"``; gpt-oss still
+    sometimes emits a native tool call and Groq rejects the reply. The history is plain text
+    (no ``tool_calls`` / ``role="tool"`` messages), so no flattening is needed.
+
+    Args:
+        llm: Chat model.
+        messages: Conversation so far (not modified).
+        fallback: Builds a deterministic answer from this turn's tool results.
+        **gen_kwargs: Passed to ``llm.generate`` (``max_tokens``, ``temperature``, ``stop``).
+
+    Returns:
+        The model's reply; on a second failure ``"Final Answer: " + fallback()``. Never raises
+        for this error (other errors propagate unchanged).
+    """
+    try:
+        return llm.generate(messages, **gen_kwargs)
+    except Exception as exc:  # noqa: BLE001 — only the tool-call 400 is handled
+        if not _is_tool_call_400(exc):
+            raise
+        log.warning("Groq rejected a native tool call; retrying in plain text: %s", exc)
+    retry = [*messages, {"role": "user", "content": FINAL_RETRY_PROMPT}]
+    try:
+        reply = llm.generate(retry, **gen_kwargs)
+        # We asked for plain text, so a reply without the ReAct markers is the final answer itself.
+        if reply.strip() and "Final Answer:" not in reply and "Action:" not in reply:
+            reply = "Final Answer: " + reply.strip()
+        return reply
+    except Exception as exc:  # noqa: BLE001
+        if not _is_tool_call_400(exc):
+            raise
+        log.warning("Groq retry also failed; using deterministic fallback answer: %s", exc)
+    return "Final Answer: " + fallback()
+
+
+def fallback_answer(tools: dict[str, Tool], steps: list[AgentStep]) -> str:
+    """Deterministic answer from this turn's tool results (papers list for paper_search)."""
+    papers: list[PaperRef] = getattr(tools.get(PAPER_TOOL), "papers", [])
+    if papers:
+        lines = ["Here are the papers I found:", ""]
+        for p in papers:
+            authors = ", ".join(p.authors[:3]) + (" et al." if len(p.authors) > 3 else "")
+            pdf = f" [PDF]({p.pdf_url})" if p.pdf_url else ""
+            lines.append(f"- [{p.title}]({p.url}) ({p.year or 'n.d.'}){' — ' + authors if authors else ''}{pdf}")
+        return "\n".join(lines)
+    found = [f"- {s.tool}: {s.observation}" for s in steps[-3:] if s.tool]
+    if found:
+        return "The model could not write a final answer. Latest tool results:\n" + "\n".join(found)
+    return "The model could not produce an answer for this request. Please try again."
+
+
 class ReActAgent:
     """Runs one ReAct conversation turn per :meth:`chat` call.
 
@@ -329,19 +395,23 @@ class ReActAgent:
             {"stop": STOP} if "stop" in inspect.signature(self.llm.generate).parameters else {}
         )
 
-    def _generate(self, messages: list[dict[str, str]]) -> str:
-        return self.llm.generate(messages, max_tokens=MAX_TOKENS, temperature=0.0, **self._gen_kwargs)
+    def _generate(self, messages: list[dict[str, str]], fallback: Callable[[], str] | None = None) -> str:
+        return groq_final_answer(
+            self.llm, messages, fallback or (lambda: fallback_answer({}, [])),
+            max_tokens=MAX_TOKENS, temperature=0.0, **self._gen_kwargs,
+        )
 
     def _step_reply(
         self, messages: list[dict[str, str]], session_id: str, step: int | str,
         notes: list[AgentNote] | None = None, at_step: int = 0,
+        fallback: Callable[[], str] | None = None,
     ) -> tuple[str, ParsedReply]:
         """Generate and parse one reply; re-ask once (not a new step) if it has no Action / Final Answer.
 
         Appends the assistant reply (and the re-ask exchange, if any) to ``messages``; a re-ask
         is recorded in ``notes`` at ``at_step``.
         """
-        reply = self._generate(messages)
+        reply = self._generate(messages, fallback)
         parsed = parse_reply(reply)
         if parsed.incomplete:
             self._log_unparsed(session_id, step, reply, parsed.error)
@@ -353,7 +423,7 @@ class ReActAgent:
             first_thought = parsed.thought
             messages.append({"role": "assistant", "content": _OBS_RE.split(reply, maxsplit=1)[0].strip() or "(no reply)"})
             messages.append({"role": "user", "content": CONTINUE_PROMPT})
-            reply = self._generate(messages)
+            reply = self._generate(messages, fallback)
             parsed = parse_reply(reply)
             parsed.thought = parsed.thought or first_thought
             step = f"{step}-reask"
@@ -406,10 +476,11 @@ class ReActAgent:
         answer: str | None = None
         python_outputs: list[str] = []
         tools_used: set[str] = set()
+        fallback = lambda: fallback_answer(tools, steps)  # noqa: E731
 
         for _ in range(self.max_steps):
             step_start = time.perf_counter()
-            _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1, notes, len(steps) + 1)
+            _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1, notes, len(steps) + 1, fallback)
             if parsed.final is not None:
                 answer = parsed.final
                 if parsed.thought:
@@ -439,7 +510,7 @@ class ReActAgent:
             messages.append({"role": "user", "content": FORCE_FINAL})
             notes.append(AgentNote(step=len(steps) + 1, kind="step_limit",
                                    text=f"Step limit ({self.max_steps}) reached; asked for a final answer from the observations so far."))
-            reply, parsed = self._step_reply(messages, session_id, "forced-final", notes, len(steps) + 1)
+            reply, parsed = self._step_reply(messages, session_id, "forced-final", notes, len(steps) + 1, fallback)
             if parsed.thought:
                 notes.append(AgentNote(step=len(steps) + 1, kind="final_thought", text=truncate(parsed.thought, NOTE_CHARS)))
             if parsed.final is None and parsed.error is None:  # it asked for another tool
