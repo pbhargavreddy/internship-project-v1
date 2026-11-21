@@ -49,7 +49,13 @@ STEP_OBS_CHARS = 500  # observation size kept in the returned steps
 STOP = ["Observation:"]  # the model must not write the tool's Observation itself
 PDF_TOOLS = {"rag_search", "summarize_papers"}
 PAPER_TOOL = "paper_search"
-CONTINUE_PROMPT = "Continue: give the Action JSON or Final Answer."
+CONTINUE_PROMPT = (
+    "Reply again with ONLY one of these, nothing else:\n"
+    'Action: {"tool": "<tool name>", "args": {...}}\n'
+    "or\n"
+    "Final Answer: <your answer>"
+)
+UNMARKED_MIN_CHARS = 300  # an unmarked reply at least this long (after its Thought) may be the final answer
 CURRENT_PREFIX = "CURRENT user message:\n"
 SUMMARY_TOOL = "summarize_papers"
 MAX_LISTED_DOCS = 30
@@ -144,7 +150,7 @@ class AgentNote(BaseModel):
     """A non-tool event in a turn, for the UI's agent log (re-asks, final thought, routing)."""
 
     step: int = Field(..., description="Shown before this step number (len(steps) + 1 = after the last step)")
-    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone | rate_limit")
+    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone | rate_limit | unmarked_final")
     text: str
 
 
@@ -232,6 +238,42 @@ def parse_reply(text: str) -> ParsedReply:
     if not isinstance(obj, dict) or not isinstance(obj.get("tool"), str) or not isinstance(obj.get("args", {}), dict):
         return ParsedReply(thought=thought, error='Action must be {"tool": "<name>", "args": {...}}.')
     return ParsedReply(thought=thought, action=ToolCall(tool=obj["tool"], args=obj.get("args", {})))
+
+
+def required_tools(message: str, doc_names: Iterable[str]) -> set[str]:
+    """Tools a question needs before its answer can be trusted: ``paper_search`` for a paper
+    search, a PDF tool for a question about an uploaded file. Empty if none is required."""
+    if PAPER_QUERY_RE.search(message):
+        return {PAPER_TOOL}
+    names = {n for doc in doc_names for n in (doc, Path(doc).stem) if len(n) >= 2}
+    if ".pdf" in message.lower() or any(re.search(rf"(?<!\w){re.escape(n)}(?!\w)", message, re.I) for n in names):
+        return set(PDF_TOOLS)
+    return set()
+
+
+def accept_unmarked(reply: str, needed: set[str], tools_used: set[str]) -> str | None:
+    """The final answer in a reply that lacks ``Final Answer:``, or ``None`` to re-ask.
+
+    Accepted only if ALL hold: no ``Action:`` in the reply; at least ``UNMARKED_MIN_CHARS``
+    characters after dropping a leading ``Thought:`` paragraph; and, if the question needs a
+    tool (``needed``), one of those tools already ran this turn.
+
+    Args:
+        reply: The raw model reply.
+        needed: :func:`required_tools` for the user's message.
+        tools_used: Tools that ran so far this turn.
+    """
+    text = _OBS_RE.split(reply, maxsplit=1)[0].strip()
+    if _ACTION_RE.search(text):
+        return None
+    if re.match(r"\**\s*Thought\s*:", text, re.I):
+        parts = re.split(r"\n\s*\n", text, maxsplit=1)  # the Thought is its first paragraph
+        text = parts[1].strip() if len(parts) > 1 else ""
+    if len(text) < UNMARKED_MIN_CHARS:
+        return None
+    if needed and not needed & tools_used:
+        return None
+    return text
 
 
 def extract_citations(answer: str, session: Session) -> list[Citation]:
@@ -485,14 +527,17 @@ class ReActAgent:
         self, messages: list[dict[str, str]], session_id: str, step: int | str,
         notes: list[AgentNote] | None = None, at_step: int = 0,
         fallback: Callable[[], str] | None = None,
+        accept: Callable[[str], str | None] | None = None,
     ) -> tuple[str, ParsedReply]:
         """Generate and parse one reply; re-ask once (not a new step) if it has no Action / Final Answer.
 
-        Appends the assistant reply (and the re-ask exchange, if any) to ``messages``; a re-ask
-        is recorded in ``notes`` at ``at_step``.
+        A reply without markers is taken as the final answer when ``accept`` returns it
+        (see :func:`accept_unmarked`); otherwise the model is re-asked. Appends the assistant
+        reply (and the re-ask exchange, if any) to ``messages``; a re-ask is recorded in
+        ``notes`` at ``at_step``.
         """
         reply = self._generate(messages, fallback)
-        parsed = parse_reply(reply)
+        parsed = self._accept_unmarked(parse_reply(reply), reply, accept, notes, at_step)
         if parsed.incomplete:
             self._log_unparsed(session_id, step, reply, parsed.error)
             if notes is not None:
@@ -504,13 +549,28 @@ class ReActAgent:
             messages.append({"role": "assistant", "content": _OBS_RE.split(reply, maxsplit=1)[0].strip() or "(no reply)"})
             messages.append({"role": "user", "content": CONTINUE_PROMPT})
             reply = self._generate(messages, fallback)
-            parsed = parse_reply(reply)
+            parsed = self._accept_unmarked(parse_reply(reply), reply, accept, notes, at_step)
             parsed.thought = parsed.thought or first_thought
             step = f"{step}-reask"
         if parsed.error is not None:
             self._log_unparsed(session_id, step, reply, parsed.error)
         messages.append({"role": "assistant", "content": _OBS_RE.split(reply, maxsplit=1)[0].strip() or "(no reply)"})
         return reply, parsed
+
+    @staticmethod
+    def _accept_unmarked(
+        parsed: ParsedReply, reply: str, accept: Callable[[str], str | None] | None,
+        notes: list[AgentNote] | None, at_step: int,
+    ) -> ParsedReply:
+        if not parsed.incomplete or accept is None:
+            return parsed
+        body = accept(reply)
+        if body is None:
+            return parsed
+        if notes is not None:
+            notes.append(AgentNote(step=at_step, kind="unmarked_final",
+                                   text="Reply had no 'Final Answer:' marker; used it as the final answer."))
+        return ParsedReply(thought=parsed.thought, final=body)
 
     def _log_unparsed(self, session_id: str, step: int | str, reply: str, error: str | None) -> None:
         finish_reason = getattr(self.llm, "last_finish_reason", None)
@@ -591,11 +651,13 @@ class ReActAgent:
         tools_used: set[str] = set()
         fallback = lambda: fallback_answer(tools, steps)  # noqa: E731
         standalone: str | None = None  # follow-up rewritten with this chat's history, computed lazily
+        needed = required_tools(message, load_doc_names(chat_id=session.session_id).values())
+        accept = lambda reply: accept_unmarked(reply, needed, tools_used)  # noqa: E731 — sees tools_used grow
         rag_rewritten = False
 
         for _ in range(self.max_steps):
             step_start = time.perf_counter()
-            _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1, notes, len(steps) + 1, fallback)
+            _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1, notes, len(steps) + 1, fallback, accept)
             self._note_rate_limit_waits(notes, len(steps) + 1)
             if parsed.final is not None:
                 answer = parsed.final
@@ -636,7 +698,7 @@ class ReActAgent:
             messages.append({"role": "user", "content": FORCE_FINAL})
             notes.append(AgentNote(step=len(steps) + 1, kind="step_limit",
                                    text=f"Step limit ({self.max_steps}) reached; asked for a final answer from the observations so far."))
-            reply, parsed = self._step_reply(messages, session_id, "forced-final", notes, len(steps) + 1, fallback)
+            reply, parsed = self._step_reply(messages, session_id, "forced-final", notes, len(steps) + 1, fallback, accept)
             self._note_rate_limit_waits(notes, len(steps) + 1)
             if parsed.thought:
                 notes.append(AgentNote(step=len(steps) + 1, kind="final_thought", text=truncate(parsed.thought, NOTE_CHARS)))

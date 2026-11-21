@@ -17,7 +17,7 @@ import pytest
 from pydantic import BaseModel
 
 from backend.agent import ReActAgent, Session, SessionStore, Tool, run_python
-from backend.agent.react import AGENT_UNAVAILABLE, FINAL_RETRY_PROMPT
+from backend.agent.react import AGENT_UNAVAILABLE, CONTINUE_PROMPT, FINAL_RETRY_PROMPT, accept_unmarked, required_tools
 from backend.agent.tools import PaperRef, PaperSearchArgs, PythonInterpreterTool, RagSearchTool
 from backend.llm import AllModelsFailedError
 from backend.config import Settings
@@ -172,7 +172,8 @@ def test_thought_without_action_is_reasked_once_without_a_step(tmp_path: Path) -
     result = _agent(llm, tmp_path, raw_log_path=tmp_path / "raw.log").chat("s1", "question")
 
     assert result.answer == "done" and result.steps == [] and llm.calls == 2
-    assert seen[1][-1] == {"role": "user", "content": "Continue: give the Action JSON or Final Answer."}
+    assert seen[1][-1] == {"role": "user", "content": CONTINUE_PROMPT}
+    assert "ONLY" in CONTINUE_PROMPT and "Final Answer:" in CONTINUE_PROMPT
     assert seen[0][-1]["content"].startswith("CURRENT user message:")
 
 
@@ -412,3 +413,64 @@ def test_request_over_budget_trims_history_first_then_old_tool_results() -> None
     assert tight[1]["content"].startswith(CURRENT_PREFIX)  # all history gone
     assert len(tight[3]["content"]) < 700 and tight[-1]["content"].startswith(OBS_PREFIX + "latest")
     assert msgs[2]["content"] == big  # input not modified
+
+
+# --- unmarked final answers -------------------------------------------------------
+
+LONG_ANSWER = "Here are the papers on attention:\n" + "\n".join(f"{i}. [Paper {i}](https://arxiv.org/abs/{i}) (2020)" for i in range(1, 12))
+
+
+def test_accept_unmarked_rules() -> None:
+    assert len(LONG_ANSWER) >= 300
+    assert accept_unmarked(LONG_ANSWER, set(), set()) == LONG_ANSWER
+    assert accept_unmarked("Thought: list them.\n\n" + LONG_ANSWER, set(), set()) == LONG_ANSWER  # Thought dropped
+    assert accept_unmarked("Thought: " + "I will call paper_search now. " * 20, set(), set()) is None  # only a Thought
+    assert accept_unmarked(LONG_ANSWER + '\nAction: {"tool": "paper_search", "args": {}}', set(), set()) is None
+    assert accept_unmarked("Short answer, no marker.", set(), set()) is None
+    assert accept_unmarked(LONG_ANSWER, {"paper_search"}, set()) is None  # needed tool hasn't run
+    assert accept_unmarked(LONG_ANSWER, {"paper_search"}, {"paper_search"}) == LONG_ANSWER
+
+
+def test_required_tools() -> None:
+    assert required_tools("find papers on attention", []) == {"paper_search"}
+    assert required_tools("what dataset did R6 use?", ["R6.pdf"]) == {"rag_search", "summarize_papers"}
+    assert required_tools("summarize report.pdf", []) == {"rag_search", "summarize_papers"}
+    assert required_tools("what is 17 * 23?", ["R6.pdf"]) == set()
+
+
+def test_unmarked_answer_before_any_paper_search_is_not_accepted(tmp_path: Path) -> None:
+    seen: list[list[dict[str, str]]] = []
+    replies = iter([LONG_ANSWER, "Final Answer: done"])
+
+    def script(messages: list[dict[str, str]]) -> str:
+        seen.append(list(messages))
+        return next(replies)
+
+    llm = FakeLLM(script)
+    agent = _agent(llm, tmp_path)
+    agent.tool_factory = lambda s: [PythonInterpreterTool()]  # no paper_search available: it can never run
+    result = agent.chat("u1", "find papers on attention")
+    assert seen[1][-1]["content"] == CONTINUE_PROMPT  # the unmarked list was re-asked, not accepted
+    assert result.answer == "done" and llm.calls == 2
+    assert not any(n.kind == "unmarked_final" for n in result.notes)
+
+
+def test_unmarked_answer_after_paper_search_is_accepted_without_reask(tmp_path: Path) -> None:
+    class Papers(Tool):
+        name = "paper_search"
+        description = "fake"
+        args_model = PaperSearchArgs
+
+        def __init__(self) -> None:
+            self.papers: list[PaperRef] = []
+
+        def run(self, args: PaperSearchArgs) -> str:
+            return "1. [Paper 1](https://arxiv.org/abs/1)"
+
+    action = json.dumps({"tool": "paper_search", "args": {"query": "attention"}})
+    llm = FakeLLM(_replies(f"Thought: search\nAction: {action}", LONG_ANSWER))
+    agent = ReActAgent(llm=llm, store=SessionStore(tmp_path), tool_factory=lambda s: [Papers()],
+                       router=FinetunedRouter(settings=Settings(_env_file=None)))
+    result = agent.chat("u2", "find papers on attention")
+    assert result.answer == LONG_ANSWER and llm.calls == 2  # no re-ask
+    assert any(n.kind == "unmarked_final" for n in result.notes)
