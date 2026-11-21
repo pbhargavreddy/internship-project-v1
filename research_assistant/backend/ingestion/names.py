@@ -1,12 +1,15 @@
 """
 names.py
 --------
-Process-wide ``doc_id -> display name`` registry, stored as JSON at
-``settings.doc_names_file`` (``data/uploads/names.json``).
+Document registry, stored as JSON at ``settings.doc_names_file``
+(``data/uploads/names.json``)::
 
-Uploads record their original filename and ``paper_search`` ingests record the
-paper title, so citations show a real name in every session instead of
-``Document <doc_id>``.
+    {"<doc_id>": {"name": "R6.pdf", "chats": {"<chat_id>": "R6.pdf", ...}}}
+
+``name`` is the default display name (upload filename or paper title); ``chats``
+maps every chat the document belongs to onto the filename used in that chat.
+Old files (``{"<doc_id>": "R6.pdf"}``) are still read; such documents belong to
+no chat until ``backend/storage/documents.py::migrate_legacy_documents`` runs.
 
 Backfill names for documents ingested before this existed:
     python -m backend.ingestion.names
@@ -23,24 +26,64 @@ from backend.config import get_settings
 
 log = logging.getLogger(__name__)
 
-_lock = threading.Lock()
+_lock = threading.RLock()
+
+Entry = dict[str, object]  # {"name": str, "chats": {chat_id: name}}
 
 
 def _path(path: str | Path | None) -> Path:
     return Path(path) if path is not None else get_settings().doc_names_file
 
 
-def load_doc_names(path: str | Path | None = None) -> dict[str, str]:
-    """All known names (empty if the file is missing or unreadable).
+def _entry(value: object) -> Entry:
+    if isinstance(value, dict):
+        chats = value.get("chats") or {}
+        return {"name": str(value.get("name") or ""), "chats": {str(k): str(v) for k, v in dict(chats).items()}}
+    return {"name": str(value), "chats": {}}  # legacy: plain name, no chat
 
-    Args:
-        path: Registry file. Defaults to ``settings.doc_names_file``.
-    """
+
+def _load_raw(path: str | Path | None = None) -> dict[str, Entry]:
     try:
         data = json.loads(_path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    return {str(k): _entry(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _write_raw(entries: dict[str, Entry], path: str | Path | None = None) -> None:
+    target = _path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(target)
+
+
+def load_doc_names(path: str | Path | None = None, chat_id: str | None = None) -> dict[str, str]:
+    """``doc_id -> name`` (empty if the file is missing or unreadable).
+
+    Args:
+        path: Registry file. Defaults to ``settings.doc_names_file``.
+        chat_id: Only documents of this chat, with the filename used there.
+    """
+    out: dict[str, str] = {}
+    for doc_id, e in _load_raw(path).items():
+        chats: dict[str, str] = e["chats"]  # type: ignore[assignment]
+        if chat_id is None:
+            out[doc_id] = str(e["name"]) or next(iter(chats.values()), "")
+        elif chat_id in chats:
+            out[doc_id] = chats[chat_id] or str(e["name"])
+    return out
+
+
+def doc_chats(doc_id: str, path: str | Path | None = None) -> list[str]:
+    """Chats that ``doc_id`` belongs to."""
+    e = _load_raw(path).get(doc_id)
+    return list(e["chats"]) if e else []  # type: ignore[arg-type]
+
+
+def legacy_doc_ids(path: str | Path | None = None) -> list[str]:
+    """Registered documents that belong to no chat (pre-migration entries)."""
+    return [d for d, e in _load_raw(path).items() if not e["chats"]]
 
 
 def normalize_doc_name(name: str) -> str:
@@ -49,33 +92,75 @@ def normalize_doc_name(name: str) -> str:
     return key[:-4].rstrip() if key.endswith(".pdf") else key
 
 
-def is_known_doc_name(text: str, path: str | Path | None = None) -> bool:
-    """Whether ``text`` is (case-insensitively) the name of a registered document."""
+def is_known_doc_name(text: str, path: str | Path | None = None, chat_id: str | None = None) -> bool:
+    """Whether ``text`` is (case-insensitively) the name of a registered document (of ``chat_id``)."""
     key = normalize_doc_name(text)
-    return bool(key) and any(normalize_doc_name(n) == key for n in load_doc_names(path).values())
+    return bool(key) and any(normalize_doc_name(n) == key for n in load_doc_names(path, chat_id).values())
 
 
-def doc_name(doc_id: str, path: str | Path | None = None) -> str | None:
-    """Registered name of ``doc_id``, or ``None``."""
-    return load_doc_names(path).get(doc_id)
+def doc_name(doc_id: str, path: str | Path | None = None, chat_id: str | None = None) -> str | None:
+    """Name of ``doc_id``: the filename used in ``chat_id`` if given and known, else the default name."""
+    e = _load_raw(path).get(doc_id)
+    if e is None:
+        return None
+    chats: dict[str, str] = e["chats"]  # type: ignore[assignment]
+    return (chats.get(chat_id) if chat_id else None) or str(e["name"]) or next(iter(chats.values()), None)
 
 
 def save_doc_names(updates: dict[str, str], path: str | Path | None = None) -> None:
-    """Merge ``updates`` into the registry (atomic write).
+    """Set default names (chat membership is kept).
 
     Args:
-        updates: ``doc_id -> name`` pairs; existing IDs are overwritten.
+        updates: ``doc_id -> name`` pairs; existing names are overwritten.
         path: Registry file. Defaults to ``settings.doc_names_file``.
     """
     if not updates:
         return
-    target = _path(path)
     with _lock:
-        names = load_doc_names(target) | updates
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(names, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(target)
+        entries = _load_raw(path)
+        for doc_id, name in updates.items():
+            entries.setdefault(doc_id, {"name": "", "chats": {}})["name"] = name
+        _write_raw(entries, path)
+
+
+def attach_doc(doc_id: str, name: str, chat_id: str, path: str | Path | None = None) -> None:
+    """Record that ``doc_id`` belongs to ``chat_id`` under ``name`` (the default name is kept if set)."""
+    with _lock:
+        entries = _load_raw(path)
+        e = entries.setdefault(doc_id, {"name": name, "chats": {}})
+        e["name"] = e["name"] or name
+        e["chats"][chat_id] = name  # type: ignore[index]
+        _write_raw(entries, path)
+
+
+def detach_doc(doc_id: str, chat_id: str, path: str | Path | None = None) -> list[str]:
+    """Remove ``chat_id`` from ``doc_id``; the entry is dropped once no chat is left.
+
+    Returns:
+        The chats that still reference the document.
+    """
+    with _lock:
+        entries = _load_raw(path)
+        e = entries.get(doc_id)
+        if e is None:
+            return []
+        chats: dict[str, str] = e["chats"]  # type: ignore[assignment]
+        chats.pop(chat_id, None)
+        if not chats:
+            del entries[doc_id]
+        _write_raw(entries, path)
+        return list(chats)
+
+
+def remove_doc_names(doc_ids: list[str], path: str | Path | None = None) -> None:
+    """Drop ``doc_ids`` from the registry entirely (missing IDs are ignored)."""
+    with _lock:
+        entries = _load_raw(path)
+        if not any(d in entries for d in doc_ids):
+            return
+        for d in doc_ids:
+            entries.pop(d, None)
+        _write_raw(entries, path)
 
 
 def _pdf_title(path: Path) -> str | None:

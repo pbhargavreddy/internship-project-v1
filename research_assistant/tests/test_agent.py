@@ -197,3 +197,17 @@ def test_paper_search_results_are_returned_as_papers_list(tmp_path: Path, monkey
     }]
     assert "[Attention Is All You Need](https://arxiv.org/abs/1706.03762) (2017)" in observations[0]
     assert "PDF: https://arxiv.org/pdf/1706.03762" in observations[0]
+
+
+def test_no_tool_turn_still_returns_agent_log_notes(tmp_path: Path) -> None:
+    llm = FakeLLM(_replies("", "Thought: just a greeting\nFinal Answer: Hello!"))
+    llm.last_finish_reason = "stop"
+
+    result = _agent(llm, tmp_path, raw_log_path=tmp_path / "raw.log").chat("s1", "Hello agent")
+
+    assert result.steps == []
+    assert [(n.step, n.kind) for n in result.notes] == [(1, "reask"), (1, "final_thought"), (1, "routing")]
+    assert "finish_reason=stop" in result.notes[0].text and "<empty>" in result.notes[0].text
+    assert result.notes[1].text == "just a greeting"
+    assert result.notes[2].text.startswith("Final answer by ")
+

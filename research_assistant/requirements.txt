@@ -23,3 +23,5 @@ peft>=0.22
 evaluate
 rouge-score
 bert-score
+pymongo>=4.6
+mongomock>=4.1   # tests only (in-memory MongoDB + GridFS)

@@ -75,11 +75,17 @@ class _FakeStore:
         self.known = known
         self.added: list[str] = []
 
-    def has_doc(self, doc_id: str) -> bool:
+    def has_doc(self, doc_id: str, chat_id: str | None = None) -> bool:
         return doc_id in self.known
 
-    def add_chunks(self, chunks: list[Chunk]) -> int:
-        self.added += [c.doc_id for c in chunks]
+    def doc_chunk_count(self, doc_id: str, chat_id: str | None = None) -> int:
+        return 1
+
+    def embed_chunks(self, chunks: list[Chunk]) -> list[list[float]]:
+        return [[0.0] for _ in chunks]
+
+    def add_embedded(self, chunks: list[Chunk], embeddings: list[list[float]], chat_id: str | None = None) -> int:
+        self.added += [(c.doc_id, chat_id) for c in chunks]
         return len(chunks)
 
 
@@ -98,13 +104,21 @@ def test_paper_search_ingests_two_papers_first_pages_and_skips_known(
     monkeypatch.setattr(web_search, "search_papers", lambda q, max_results: papers)
     monkeypatch.setattr(web_search, "download_pdf", lambda p: f"/pdfs/{p.id[-1]}")
     monkeypatch.setattr(ingestion, "compute_doc_id", lambda path: f"doc{path[-1]}")
-    monkeypatch.setattr(ingestion, "ingest_pdf", fake_ingest)
+    import backend.ingestion.names as names
+    import backend.storage.documents as documents
+    from backend.config import Settings
+
+    monkeypatch.setattr(documents, "extract_chunks", lambda path, doc_id, max_pages=None: fake_ingest(str(path), max_pages))
+    monkeypatch.setattr(documents, "get_db", lambda: None)  # never touch a real MongoDB
+    monkeypatch.setattr(documents, "_pdf_title", lambda path: None)
+    monkeypatch.setattr(names, "get_settings", lambda: Settings(_env_file=None, doc_names_file=tmp_path / "names.json"))
     monkeypatch.setattr(retrieval, "get_vector_store", lambda: store)
 
     out = PaperSearchTool(Session(session_id="s")).run(PaperSearchArgs(query="q", ingest=True))
 
     assert ingested == [("/pdfs/1", 15)]  # paper 0 already indexed; papers 2-3 over the cap
-    assert store.added == ["doc1"]
+    assert store.added == [("doc1", "s")]  # indexed for this chat (session_id == chat_id)
+    assert names.doc_chats("doc1") == ["s"]
     assert "Doc 1: P0" in out and "Doc 2: P1" in out and "P2;" not in out
 
 

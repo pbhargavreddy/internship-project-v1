@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     finetuned_model: str = "scholarpulse"
     finetuned_api_key: SecretStr = SecretStr("dummy")
 
+    # ── MongoDB (backend/storage/): chats + GridFS PDF backups ───────────────
+    # Unset or unreachable → chats are saved as local JSON (chats_dir). Never log the URI.
+    mongodb_uri: SecretStr | None = None
+    mongodb_db: str = "scholarpulse"
+    chats_dir: Path = Path("data/chats")
+
     # ── CPU usage ────────────────────────────────────────────────────────────
     cpu_threads: int = 4  # OMP / MKL / torch thread cap, applied at backend startup
 

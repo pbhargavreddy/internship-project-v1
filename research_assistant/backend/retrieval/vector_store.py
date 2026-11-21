@@ -66,12 +66,24 @@ class BgeEmbedder:
 
 def _chunk_from(cid: str, text: str, meta: dict) -> Chunk:
     return Chunk(
-        chunk_id=cid,
+        chunk_id=str(meta.get("chunk_id") or cid),  # store IDs are "<chat_id>:<chunk_id>"
         doc_id=str(meta["doc_id"]),
         text=text,
         page=int(meta["page"]),
         section=str(meta["section"]) or None,  # stored as "" when missing
     )
+
+
+def _where(doc_id: str | None = None, doc_ids: list[str] | None = None, chat_id: str | None = None) -> dict | None:
+    """Chroma metadata filter; Chroma needs ``$and`` for more than one condition."""
+    conds: list[dict] = []
+    if doc_id is not None:
+        conds.append({"doc_id": doc_id})
+    if doc_ids:
+        conds.append({"doc_id": {"$in": doc_ids}})
+    if chat_id:
+        conds.append({"chat_id": chat_id})
+    return None if not conds else conds[0] if len(conds) == 1 else {"$and": conds}
 
 
 class VectorStore:
@@ -113,18 +125,24 @@ class VectorStore:
         """Number of stored chunks."""
         return self._collection.count()
 
-    def has_doc(self, doc_id: str) -> bool:
-        """Whether any chunk of ``doc_id`` is already stored."""
-        return bool(self._collection.get(where={"doc_id": doc_id}, limit=1, include=[])["ids"])
+    def has_doc(self, doc_id: str, chat_id: str | None = None) -> bool:
+        """Whether any chunk of ``doc_id`` is stored (in ``chat_id``, if given)."""
+        return bool(self._collection.get(where=_where(doc_id=doc_id, chat_id=chat_id), limit=1, include=[])["ids"])
 
-    def resolve_doc_id(self, doc: str) -> str | None:
+    def doc_chunk_count(self, doc_id: str, chat_id: str | None = None) -> int:
+        """Number of chunks of ``doc_id`` (in ``chat_id``, if given)."""
+        return len(self._collection.get(where=_where(doc_id=doc_id, chat_id=chat_id), include=[])["ids"])
+
+    def resolve_doc_id(self, doc: str, chat_id: str | None = None) -> str | None:
         """Map a doc_id or a document name to a stored doc_id.
 
-        Names come from the shared registry (``data/uploads/names.json``) and match
+        Names come from the registry (``data/uploads/names.json``) and match
         case-insensitively, with or without ``.pdf``: ``"r6"``, ``"R6.pdf"``.
+        With ``chat_id`` only that chat's documents (and their names) are considered.
 
         Args:
             doc: doc_id, upload filename or paper title.
+            chat_id: Chat whose documents to search.
 
         Returns:
             The doc_id, or ``None`` if nothing stored matches.
@@ -132,57 +150,123 @@ class VectorStore:
         ref = doc.strip()
         if not ref:
             return None
-        if self.has_doc(ref):
+        if self.has_doc(ref, chat_id):
             return ref
         key = normalize_doc_name(ref)
-        matches = [d for d, name in load_doc_names().items() if normalize_doc_name(name) == key and self.has_doc(d)]
+        matches = [d for d, name in load_doc_names(chat_id=chat_id).items()
+                   if normalize_doc_name(name) == key and self.has_doc(d, chat_id)]
         if len(matches) > 1:
             log.warning("%d documents are named %r; using the most recently registered", len(matches), doc)
         return matches[-1] if matches else None
 
-    def get_doc_chunks(self, doc: str) -> list[Chunk]:
+    def get_doc_chunks(self, doc: str, chat_id: str | None = None) -> list[Chunk]:
         """All chunks of one document in page order (metadata filter, no semantic search).
 
         Args:
             doc: doc_id or document name (see :meth:`resolve_doc_id`).
+            chat_id: Only this chat's copy of the document.
 
         Returns:
             The chunks sorted by page (insertion order within a page), or ``[]`` if unknown.
         """
-        doc_id = self.resolve_doc_id(doc)
+        doc_id = self.resolve_doc_id(doc, chat_id)
         if doc_id is None:
             return []
-        res = self._collection.get(where={"doc_id": doc_id}, include=["documents", "metadatas"])
+        res = self._collection.get(where=_where(doc_id=doc_id, chat_id=chat_id), include=["documents", "metadatas"])
         chunks = [_chunk_from(cid, text, meta) for cid, text, meta in zip(res["ids"], res["documents"], res["metadatas"])]
         return sorted(chunks, key=lambda c: c.page)  # stable: keeps chunk order within a page
 
-    def add_chunks(self, chunks: list[Chunk]) -> int:
-        """Embed and upsert chunks by ``chunk_id``.
+    def delete_doc(self, doc_id: str, chat_id: str | None = None) -> int:
+        """Remove the chunks of ``doc_id`` (only ``chat_id``'s copy, if given); returns how many."""
+        ids = self._collection.get(where=_where(doc_id=doc_id, chat_id=chat_id), include=[])["ids"]
+        if ids:
+            self._collection.delete(ids=ids)
+        return len(ids)
+
+    def chat_doc_ids(self, chat_id: str) -> list[str]:
+        """doc_ids with chunks in ``chat_id``."""
+        metas = self._collection.get(where={"chat_id": chat_id}, include=["metadatas"])["metadatas"]
+        return list(dict.fromkeys(str(m["doc_id"]) for m in metas))
+
+    def legacy_doc_ids(self) -> list[str]:
+        """doc_ids that have chunks without a ``chat_id`` (stored before per-chat documents)."""
+        metas = self._collection.get(include=["metadatas"])["metadatas"]
+        return list(dict.fromkeys(str(m["doc_id"]) for m in metas if not m.get("chat_id")))
+
+    def assign_chat(self, doc_id: str, chat_id: str) -> int:
+        """Move a legacy document's unscoped chunks into ``chat_id`` (embeddings are reused).
+
+        Returns:
+            Number of chunks moved.
+        """
+        res = self._collection.get(where={"doc_id": doc_id}, include=["documents", "metadatas", "embeddings"])
+        rows = [(cid, doc, meta, emb) for cid, doc, meta, emb in
+                zip(res["ids"], res["documents"], res["metadatas"], res["embeddings"]) if not meta.get("chat_id")]
+        if not rows:
+            return 0
+        self._collection.upsert(
+            ids=[f"{chat_id}:{meta.get('chunk_id') or cid}" for cid, _, meta, _ in rows],
+            documents=[doc for _, doc, _, _ in rows],
+            embeddings=[list(emb) for _, _, _, emb in rows],
+            metadatas=[{**meta, "chat_id": chat_id, "chunk_id": meta.get("chunk_id") or cid} for cid, _, meta, _ in rows],
+        )
+        self._collection.delete(ids=[cid for cid, _, _, _ in rows])
+        return len(rows)
+
+    def embed_chunks(self, chunks: list[Chunk]) -> list[list[float]]:
+        """Passage embeddings for ``chunks`` (timed as the ``embed`` stage)."""
+        if not chunks:
+            return []
+        with timed("embed", chunks=len(chunks)):
+            return self.embedder.embed_documents([c.text for c in chunks])
+
+    def add_embedded(self, chunks: list[Chunk], embeddings: list[list[float]], chat_id: str | None = None) -> int:
+        """Upsert chunks with precomputed embeddings (e.g. a rebuild from MongoDB; no embedder call).
 
         Args:
             chunks: Chunks to store. Existing IDs are overwritten.
+            embeddings: One vector per chunk.
+            chat_id: Chat the document belongs to. The same document can be stored once per
+                chat: store IDs are ``<chat_id>:<chunk_id>``. ``None`` stores it unscoped (tests).
 
         Returns:
             Number of chunks upserted.
         """
         if not chunks:
             return 0
-        with timed("embed", chunks=len(chunks)):
-            embeddings = self.embedder.embed_documents([c.text for c in chunks])
+        scope = {"chat_id": chat_id} if chat_id else {}
         self._collection.upsert(
-            ids=[c.chunk_id for c in chunks],
+            ids=[f"{chat_id}:{c.chunk_id}" if chat_id else c.chunk_id for c in chunks],
             documents=[c.text for c in chunks],
             embeddings=embeddings,
             # Chroma metadata can't hold None, so a missing section is stored as "".
             metadatas=[
-                {"doc_id": c.doc_id, "page": c.page, "section": c.section or ""} for c in chunks
+                {"doc_id": c.doc_id, "page": c.page, "section": c.section or "", "chunk_id": c.chunk_id, **scope}
+                for c in chunks
             ],
         )
         log.info("Upserted %d chunks into %s", len(chunks), self._collection.name)
         return len(chunks)
 
+    def add_chunks(self, chunks: list[Chunk], chat_id: str | None = None) -> int:
+        """Embed and upsert chunks (see :meth:`add_embedded`)."""
+        return self.add_embedded(chunks, self.embed_chunks(chunks), chat_id)
+
+    def export_doc(self, doc_id: str, chat_id: str) -> tuple[list[Chunk], list[list[float]]]:
+        """One chat's chunks of a document with their stored embeddings, in page order."""
+        res = self._collection.get(where=_where(doc_id=doc_id, chat_id=chat_id),
+                                   include=["documents", "metadatas", "embeddings"])
+        rows = sorted(zip(res["ids"], res["documents"], res["metadatas"], res["embeddings"]),
+                      key=lambda r: int(r[2]["page"]))
+        return [_chunk_from(cid, text, meta) for cid, text, meta, _ in rows], [[float(x) for x in e] for *_, e in rows]
+
+    def doc_chat_pairs(self) -> list[tuple[str, str]]:
+        """Every ``(doc_id, chat_id)`` stored with a chat."""
+        metas = self._collection.get(include=["metadatas"])["metadatas"]
+        return list(dict.fromkeys((str(m["doc_id"]), str(m["chat_id"])) for m in metas if m.get("chat_id")))
+
     def search(
-        self, query: str, k: int = 5, doc_ids: list[str] | None = None
+        self, query: str, k: int = 5, doc_ids: list[str] | None = None, chat_id: str | None = None
     ) -> list[tuple[Chunk, float]]:
         """Return the ``k`` chunks most similar to ``query``.
 
@@ -190,13 +274,14 @@ class VectorStore:
             query: Natural-language query (the bge prefix is added by the embedder).
             k: Maximum number of results.
             doc_ids: If given, only search chunks from these documents.
+            chat_id: If given, only search this chat's documents.
 
         Returns:
             ``(chunk, score)`` pairs, best first; score is cosine similarity.
         """
         if k < 1 or self.count() == 0:
             return []
-        where = {"doc_id": {"$in": doc_ids}} if doc_ids else None
+        where = _where(doc_ids=doc_ids, chat_id=chat_id)
         res = self._collection.query(
             query_embeddings=[self.embedder.embed_query(query)],
             n_results=k,

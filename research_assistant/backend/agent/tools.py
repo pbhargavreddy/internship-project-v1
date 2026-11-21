@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 MAX_OUTPUT_CHARS = 4000
 ABSTRACT_CHARS = 300
 
-RetrieveFn = Callable[[str, int], list[tuple[Chunk, float]]]
+RetrieveFn = Callable[[str, int], list[tuple[Chunk, float]]]  # (query, k), already scoped to the chat
 DocRetrieveFn = Callable[[str, int, list[str] | None], list[tuple[Chunk, float]]]
 ResolveDocFn = Callable[[str], str | None]  # doc name / doc_id -> stored doc_id
 DocChunksFn = Callable[[str], list[Chunk]]  # doc name / doc_id -> its chunks in page order
@@ -70,22 +70,22 @@ def session_doc_ref(session: Session, ref: str) -> str:
     return (session.doc_id_for(int(m.group(1))) or ref.strip()) if m else ref.strip()
 
 
-def unknown_doc_message(doc: str) -> str:
-    names = sorted(set(load_doc_names().values()))
+def unknown_doc_message(doc: str, chat_id: str | None = None) -> str:
+    names = sorted(set(load_doc_names(chat_id=chat_id).values()))
     known = ", ".join(names[:20]) + (" ..." if len(names) > 20 else "")
-    return f"Error: no document named '{doc}'. Known documents: {known or 'none'}."
+    return f"Error: no document named '{doc}' in this chat. Its documents: {known or 'none'}."
 
 
-def _store_resolve(doc: str) -> str | None:
+def _store_resolve(doc: str, chat_id: str | None) -> str | None:
     from backend.retrieval import get_vector_store  # heavy: chromadb
 
-    return get_vector_store().resolve_doc_id(doc)
+    return get_vector_store().resolve_doc_id(doc, chat_id=chat_id)
 
 
-def _store_doc_chunks(doc: str) -> list[Chunk]:
+def _store_doc_chunks(doc: str, chat_id: str | None) -> list[Chunk]:
     from backend.retrieval import get_vector_store  # heavy: chromadb
 
-    return get_vector_store().get_doc_chunks(doc)
+    return get_vector_store().get_doc_chunks(doc, chat_id=chat_id)
 
 
 def truncate(text: str, limit: int) -> str:
@@ -132,16 +132,15 @@ class RagSearchArgs(BaseModel):
     doc: str | None = None
 
 
-def _default_retrieve(query: str, k: int) -> list[tuple[Chunk, float]]:
-    from backend.retrieval.search import retrieve  # heavy: chromadb + torch
+def _chat_retrieve(chat_id: str) -> DocRetrieveFn:
+    """Reranked retrieval limited to ``chat_id``'s documents."""
 
-    return retrieve(query, k=k, rerank=True)
+    def run(query: str, k: int, doc_ids: list[str] | None = None) -> list[tuple[Chunk, float]]:
+        from backend.retrieval.search import retrieve  # heavy: chromadb + torch
 
+        return retrieve(query, k=k, doc_ids=doc_ids, rerank=True, chat_id=chat_id)
 
-def _default_doc_retrieve(query: str, k: int, doc_ids: list[str] | None) -> list[tuple[Chunk, float]]:
-    from backend.retrieval.search import retrieve  # heavy: chromadb + torch
-
-    return retrieve(query, k=k, doc_ids=doc_ids, rerank=True)
+    return run
 
 
 GENERIC_DOC_QUERY = "main contribution, method and results"
@@ -172,20 +171,22 @@ class RagSearchTool(Tool):
         resolve_doc_fn: ResolveDocFn | None = None,
     ) -> None:
         self.session = session
-        self.retrieve_fn: RetrieveFn = retrieve_fn or _default_retrieve
-        self.doc_retrieve_fn: DocRetrieveFn = doc_retrieve_fn or _default_doc_retrieve
-        self.resolve_doc_fn: ResolveDocFn = resolve_doc_fn or _store_resolve
+        chat_id = session.session_id  # one session per chat: only this chat's documents are visible
+        self.chat_id: str = chat_id
+        self.retrieve_fn: RetrieveFn = retrieve_fn or _chat_retrieve(chat_id)
+        self.doc_retrieve_fn: DocRetrieveFn = doc_retrieve_fn or _chat_retrieve(chat_id)
+        self.resolve_doc_fn: ResolveDocFn = resolve_doc_fn or (lambda ref: _store_resolve(ref, chat_id))
         self.retrieved: list[tuple[int, Chunk]] = []  # (Doc N, chunk) seen this turn
 
     def run(self, args: RagSearchArgs) -> str:
         doc, query = args.doc, args.query
-        if not doc and is_known_doc_name(query):
+        if not doc and is_known_doc_name(query, chat_id=self.chat_id):
             # The model searched for a filename; a semantic search for "R6.pdf" finds nothing useful.
             doc, query = query, GENERIC_DOC_QUERY
         if doc:
             doc_id = self.resolve_doc_fn(session_doc_ref(self.session, doc))
             if doc_id is None:
-                return unknown_doc_message(doc)
+                return unknown_doc_message(doc, self.chat_id)
             hits = self.doc_retrieve_fn(query, args.k, [doc_id])
         else:
             hits = self.retrieve_fn(query, args.k)
@@ -241,22 +242,22 @@ class IngestOutcome(BaseModel):
     detail: str | None = None
 
 
-def ingest_paper(paper: Any) -> IngestOutcome:
-    """Download and index one paper (first ``ingest_max_pages`` pages); never raises.
+def ingest_paper(paper: Any, chat_id: str) -> IngestOutcome:
+    """Download and index one paper (first ``ingest_max_pages`` pages) for ``chat_id``; never raises.
 
-    Papers whose ``doc_id`` is already in the vector store are not re-chunked or
-    re-embedded. The title is registered in the shared names registry unless the
-    document already has a name (an uploaded filename takes precedence).
+    A paper the chat already holds is not re-chunked or re-embedded. The title is
+    registered as the document's name in that chat.
 
     Args:
         paper: A ``backend.tools.web_search.Paper``.
+        chat_id: Chat that gets the document.
 
     Returns:
         What happened, with the ``doc_id`` on success.
     """
-    from backend.ingestion import compute_doc_id, ingest_pdf
-    from backend.ingestion.names import doc_name, save_doc_names
+    from backend.ingestion import compute_doc_id
     from backend.retrieval import get_vector_store
+    from backend.storage import documents
     from backend.tools.web_search import download_pdf
 
     out = IngestOutcome(paper_id=paper.id, title=paper.title, status="failed")
@@ -270,20 +271,11 @@ def ingest_paper(paper: Any) -> IngestOutcome:
             out.detail = "PDF download failed"
             return out
         doc_id = compute_doc_id(path)
-        store = get_vector_store()
-        if store.has_doc(doc_id):
-            log.info("Skipping %s: already ingested as %s", paper.id, doc_id)
-            out.status = "already_ingested"
-        else:
-            chunks = ingest_pdf(path, max_pages=get_settings().ingest_max_pages)
-            if not chunks:
-                out.detail = "no text extracted"
-                return out
-            store.add_chunks(chunks)
-            out.status, out.chunk_count = "ingested", len(chunks)
-        if doc_name(doc_id) is None:
-            save_doc_names({doc_id: paper.title})
-        out.doc_id = doc_id
+        # The downloaded PDF is deleted afterwards; chunks + embeddings live in MongoDB / ChromaDB.
+        added = documents.add_document(path, doc_id, paper.title, chat_id, store=get_vector_store(),
+                                       title=paper.title, max_pages=get_settings().ingest_max_pages)
+        out.status = "already_ingested" if added.status == "skipped" else "ingested"
+        out.chunk_count, out.doc_id = added.chunk_count, doc_id
     except Exception as exc:  # noqa: BLE001 — one bad PDF must not stop the rest
         log.warning("Ingest failed for %s: %s", paper.id, exc)
         out.status, out.detail = "failed", str(exc)
@@ -339,7 +331,7 @@ class PaperSearchTool(Tool):
         """Ingest ``papers`` and give each a ``Doc N`` in this session."""
         done, failed = [], []
         for paper in papers:
-            outcome = ingest_paper(paper)
+            outcome = ingest_paper(paper, self.session.session_id)
             if outcome.doc_id is None:
                 failed.append(paper.title)
                 continue
@@ -446,7 +438,7 @@ class SummarizePapersTool(Tool):
         fallback_llm: Any | None = None,
     ) -> None:
         self.session = session
-        self.doc_chunks_fn: DocChunksFn = doc_chunks_fn or _store_doc_chunks
+        self.doc_chunks_fn: DocChunksFn = doc_chunks_fn or (lambda ref: _store_doc_chunks(ref, session.session_id))
         self.rag = RagSearchTool(session, retrieve_fn=lambda q, k: [])  # for numbering/citations only
         self.router: FinetunedRouter = router or get_router()
         self._fallback_llm = fallback_llm
@@ -499,7 +491,7 @@ class SummarizePapersTool(Tool):
         self.model_used, self.last_summary = None, None
         chunks = self.doc_chunks_fn(session_doc_ref(self.session, args.doc))
         if not chunks:
-            return unknown_doc_message(args.doc)
+            return unknown_doc_message(args.doc, self.session.session_id)
         doc_id = chunks[0].doc_id
         n = self.session.doc_number(doc_id)
         groups = [(heading, _pick(group)) for heading, group in group_sections(chunks)]

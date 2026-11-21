@@ -62,7 +62,8 @@ class Session(BaseModel):
         The registry (``data/uploads/names.json``) holds upload filenames and the titles of
         papers ingested by paper_search in any session.
         """
-        return self.doc_titles.get(doc_id) or doc_name(doc_id) or f"Document {doc_id}"
+        # session_id is the chat_id, so a chat shows the filename it uploaded the document under.
+        return self.doc_titles.get(doc_id) or doc_name(doc_id, chat_id=self.session_id) or f"Document {doc_id}"
 
     def doc_id_for(self, number: int) -> str | None:
         """Inverse of :meth:`doc_number`; ``None`` if ``number`` was never assigned."""
@@ -104,6 +105,10 @@ class SessionStore:
         except ValueError:
             log.warning("Corrupt session file %s; starting fresh", path)
             return Session(session_id=session_id)
+
+    def delete(self, session_id: str) -> None:
+        """Remove a session file (no error if it doesn't exist)."""
+        self._path(session_id).unlink(missing_ok=True)
 
     def save(self, session: Session) -> None:
         """Write the session atomically (temp file, then rename)."""

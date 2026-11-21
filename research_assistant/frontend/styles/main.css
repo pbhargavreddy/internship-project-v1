@@ -64,3 +64,255 @@
     opacity: 0.85;
     margin: 4px 0 0 0;
 }
+
+/* ── Named chats (app.py) ─────────────────────────────────────────────────── */
+.sp-user-row {
+    display: flex;
+    justify-content: flex-end;
+    margin: 6px 0;
+}
+.sp-user-bubble {
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background-color: var(--sp-bubble-bg);
+    color: var(--sp-bubble-text);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.sp-offline {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: #b45309;
+    border: 1px solid rgba(180, 83, 9, 0.45);
+    margin-bottom: 8px;
+}
+
+/* ── Sidebar chat rows: name (ellipsis) + ⋮ menu, never wrapping ──────────── */
+[class*="st-key-chatrow-"] [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 2px;
+}
+[class*="st-key-chatrow-"] [data-testid="stColumn"]:first-child {
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+}
+[class*="st-key-chatrow-"] [data-testid="stColumn"]:last-child {
+    min-width: 2rem !important;
+    flex: 0 0 auto !important;
+    width: auto !important;
+}
+[class*="st-key-open-"] button,
+[class*="st-key-openact-"] button,
+[class*="st-key-chatmenu-"] button {
+    background: transparent;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 8px;
+    min-height: 2rem;
+    padding: 4px 10px;
+}
+[class*="st-key-open-"] button,
+[class*="st-key-openact-"] button {
+    justify-content: flex-start;
+    overflow: hidden;
+}
+[class*="st-key-open-"] button div,
+[class*="st-key-openact-"] button div {
+    min-width: 0;
+}
+[class*="st-key-open-"] button p,
+[class*="st-key-openact-"] button p {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+}
+[class*="st-key-open-"] button:hover,
+[class*="st-key-chatmenu-"] button:hover {
+    background: var(--sp-row-hover);
+}
+[class*="st-key-openact-"] button {
+    background: var(--sp-row-active);
+    border-left: 3px solid var(--sp-accent) !important;
+}
+[class*="st-key-chatmenu-"] button {
+    padding: 4px 6px;
+}
+
+/* ── Sidebar PDF cards with a × in the top-right corner ───────────────────── */
+[class*="st-key-doccard-"] {
+    position: relative;
+    background: var(--sp-card-bg);
+    border: 1px solid var(--sp-card-border);
+    border-radius: 8px;
+    padding: 8px 30px 8px 10px;
+    gap: 0;
+}
+.sp-doc-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sp-doc-meta {
+    font-size: 0.75rem;
+    color: var(--sp-muted);
+}
+[class*="st-key-docx-"] {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    width: auto !important;
+}
+[class*="st-key-docx-"] button {
+    min-height: 1.5rem;
+    padding: 0 6px;
+    font-size: 1rem;
+    line-height: 1;
+    color: var(--sp-muted);
+}
+[class*="st-key-docx-"] button:hover {
+    color: #DC2626;
+}
+
+/* ── Light / dark palettes for the custom components above ──────────────────
+   load_css() renders a hidden .sp-theme-light / .sp-theme-dark marker from the
+   active Streamlit theme; before it is known, follow the system preference. */
+.sp-theme-light, .sp-theme-dark { display: none; }
+:root {
+    --sp-bubble-bg: #EEF0FB;
+    --sp-bubble-text: #1F2937;
+    --sp-row-hover: #EEF0FB;
+    --sp-row-active: #E0E3FF;
+    --sp-accent: #4F46E5;
+    --sp-card-bg: #FFFFFF;
+    --sp-card-border: #E5E7EB;
+    --sp-muted: #6B7280;
+    --sp-nav-bg: rgba(255, 255, 255, 0.86);
+    --sp-nav-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 16px rgba(16, 24, 40, 0.06);
+}
+:root:has(.sp-theme-dark) {
+    --sp-bubble-bg: #262A45;
+    --sp-bubble-text: #E5E7EB;
+    --sp-row-hover: #23263A;
+    --sp-row-active: #2E3260;
+    --sp-accent: #818CF8;
+    --sp-card-bg: #1A1D2E;
+    --sp-card-border: #2D2F45;
+    --sp-muted: #9CA3AF;
+    --sp-nav-bg: rgba(15, 17, 23, 0.86);
+    --sp-nav-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-color-scheme: dark) {
+    :root:not(:has(.sp-theme-light)) {
+        --sp-bubble-bg: #262A45;
+        --sp-bubble-text: #E5E7EB;
+        --sp-row-hover: #23263A;
+        --sp-row-active: #2E3260;
+        --sp-accent: #818CF8;
+        --sp-card-bg: #1A1D2E;
+        --sp-card-border: #2D2F45;
+        --sp-muted: #9CA3AF;
+        --sp-nav-bg: rgba(15, 17, 23, 0.86);
+        --sp-nav-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.35);
+    }
+}
+
+/* ── Top navigation bar (sticky, every page) ─────────────────────────────── */
+[data-testid="stMainBlockContainer"] {
+    padding-top: 4.25rem;
+}
+[data-testid="stLayoutWrapper"]:has(> .st-key-navbar),
+.st-key-navbar {
+    position: sticky;
+    top: 3.75rem;               /* just below Streamlit's own toolbar */
+    z-index: 990;
+}
+.st-key-navbar {
+    background: var(--sp-nav-bg);
+    backdrop-filter: saturate(180%) blur(10px);
+    -webkit-backdrop-filter: saturate(180%) blur(10px);
+    border: 1px solid var(--sp-card-border);
+    border-radius: 14px;
+    box-shadow: var(--sp-nav-shadow);
+    padding: 8px 12px 8px 16px;
+    margin-bottom: 0.75rem;
+}
+.st-key-navbar [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+}
+.st-key-navbar [data-testid="stColumn"]:first-child {
+    min-width: 0 !important;
+}
+.st-key-navbar [data-testid="stColumn"]:last-child {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+}
+.st-key-navbar [data-testid="stColumn"]:last-child [data-testid="stVerticalBlock"] {
+    align-items: flex-end;
+}
+.st-key-theme-toggle button {
+    border: 1px solid var(--sp-card-border) !important;
+    border-radius: 999px;
+    padding: 4px 14px;
+    min-height: 2rem;
+    font-weight: 500;
+}
+.st-key-theme-toggle button:hover {
+    background: var(--sp-row-hover);
+}
+.sp-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    white-space: nowrap;
+}
+.sp-brand-mark {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    object-fit: contain;
+}
+.sp-brand-name {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+.sp-brand-tag {
+    font-size: 0.8rem;
+    color: var(--sp-muted);
+    padding-left: 10px;
+    border-left: 1px solid var(--sp-card-border);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Sidebar section label + empty state ─────────────────────────────────── */
+.sp-section-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sp-muted);
+    margin: 10px 0 2px 2px;
+}
+.sp-empty {
+    margin: 12vh auto 0;
+    max-width: 460px;
+    text-align: center;
+}
+.sp-empty-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+.sp-empty-text {
+    color: var(--sp-muted);
+    line-height: 1.6;
+}

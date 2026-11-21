@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 
 def retrieve(
-    query: str, k: int = 5, doc_ids: list[str] | None = None, rerank: bool = True
+    query: str, k: int = 5, doc_ids: list[str] | None = None, rerank: bool = True, chat_id: str | None = None
 ) -> list[tuple[Chunk, float]]:
     """Return the top-``k`` chunks for ``query``.
 
@@ -31,6 +31,7 @@ def retrieve(
         k: Number of chunks to return.
         doc_ids: If given, only search these documents.
         rerank: Rerank vector hits with the trained cross-encoder.
+        chat_id: If given, only search this chat's documents.
 
     Returns:
         ``(chunk, score)`` pairs, best first.
@@ -44,6 +45,6 @@ def retrieve(
             log.warning("No trained reranker at %s; returning vector-search order", get_settings().reranker_path)
     store = get_vector_store()
     if reranker is None:
-        return store.search(query, k=k, doc_ids=doc_ids)
-    candidates = store.search(query, k=max(k, get_settings().rerank_candidates), doc_ids=doc_ids)
+        return store.search(query, k=k, doc_ids=doc_ids, chat_id=chat_id)
+    candidates = store.search(query, k=max(k, get_settings().rerank_candidates), doc_ids=doc_ids, chat_id=chat_id)
     return reranker.rerank(query, [chunk for chunk, _ in candidates], top_k=k)

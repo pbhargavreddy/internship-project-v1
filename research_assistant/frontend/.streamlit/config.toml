@@ -1,46 +1,21 @@
 # .streamlit/config.toml
-# Light/dark dual-mode theme — user can toggle via the Settings menu.
-# Fonts: Inter (body), JetBrains Mono (code)
-# Colors: calm indigo accent, clean surfaces.
+# research_assistant/.streamlit is a symlink to this folder, because Streamlit reads
+# .streamlit/ from the directory it is started in (run.sh starts it in research_assistant/).
+#
+# No `base` → the app follows the system light/dark setting by default. Users can
+# switch with the sidebar's Dark/Light mode button (or Settings → Theme).
 
 [theme]
-# No `base` here → Streamlit follows the system light/dark preference.
-# Users can still override via the Settings toggle.
-font          = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-headingFont   = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
-codeFont      = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-baseRadius    = "medium"
-showWidgetBorder = true
-paddingTop    = "2rem"
-paddingBottom = "3rem"
+font = "sans serif"
 
 [theme.light]
-primaryColor              = "#4f46e5"
-backgroundColor           = "#ffffff"
-secondaryBackgroundColor  = "#f7f8fa"
-textColor                 = "#1a1d23"
-borderColor               = "#e0e3eb"
-linkColor                 = "#4f46e5"
-
-[theme.light.sidebar]
-backgroundColor           = "#f0f1f5"
-secondaryBackgroundColor  = "#e4e6ef"
-textColor                 = "#1a1d23"
-borderColor               = "#d1d5db"
-primaryColor              = "#4f46e5"
+primaryColor              = "#4F46E5"
+backgroundColor           = "#FFFFFF"
+secondaryBackgroundColor  = "#F5F6FA"
+textColor                 = "#1F2937"
 
 [theme.dark]
-primaryColor              = "#818cf8"
-backgroundColor           = "#0f1117"
-secondaryBackgroundColor  = "#1a1d2e"
-textColor                 = "#e5e7eb"
-borderColor               = "#2d2f45"
-linkColor                 = "#818cf8"
-
-[theme.dark.sidebar]
-backgroundColor           = "#13151f"
-secondaryBackgroundColor  = "#1e2130"
-textColor                 = "#e5e7eb"
-borderColor               = "#2d2f45"
-primaryColor              = "#818cf8"
-
+primaryColor              = "#818CF8"
+backgroundColor           = "#0F1117"
+secondaryBackgroundColor  = "#1A1D2E"
+textColor                 = "#E5E7EB"

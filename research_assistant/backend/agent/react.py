@@ -53,6 +53,7 @@ SUMMARY_TOOL = "summarize_papers"
 MAX_LISTED_DOCS = 30
 PYTHON_TOOL = "python_interpreter"
 
+
 SYSTEM_TEMPLATE = """You are ScholarPulse, a research assistant that reasons step by step and calls tools.
 
 Tools (args are JSON):
@@ -118,6 +119,17 @@ class AgentStep(BaseModel):
     model_used: str | None = Field(None, description="Model the tool called (e.g. summarize_papers)")
 
 
+class AgentNote(BaseModel):
+    """A non-tool event in a turn, for the UI's agent log (re-asks, final thought, routing)."""
+
+    step: int = Field(..., description="Shown before this step number (len(steps) + 1 = after the last step)")
+    kind: str = Field(..., description="reask | final_thought | step_limit | routing")
+    text: str
+
+
+NOTE_CHARS = 500
+
+
 class AgentResult(BaseModel):
     answer: str
     citations: list[Citation]
@@ -128,6 +140,7 @@ class AgentResult(BaseModel):
     fallback_reason: str | None = Field(None, description="Why a PDF turn fell back to the API LLM")
     images: list[str] = Field(default_factory=list, description="PNGs saved this turn (paths under data/plots)")
     papers: list[PaperRef] = Field(default_factory=list, description="Papers found by paper_search this turn")
+    notes: list[AgentNote] = Field(default_factory=list, description="Agent log events besides tool steps")
     # Texts of the retrieved chunks the answer cites (all retrieved chunks if it cites none).
     # Used for the faithfulness check; not sent to clients.
     cited_chunks: list[str] = Field(default_factory=list, exclude=True)
@@ -319,15 +332,24 @@ class ReActAgent:
     def _generate(self, messages: list[dict[str, str]]) -> str:
         return self.llm.generate(messages, max_tokens=MAX_TOKENS, temperature=0.0, **self._gen_kwargs)
 
-    def _step_reply(self, messages: list[dict[str, str]], session_id: str, step: int | str) -> tuple[str, ParsedReply]:
+    def _step_reply(
+        self, messages: list[dict[str, str]], session_id: str, step: int | str,
+        notes: list[AgentNote] | None = None, at_step: int = 0,
+    ) -> tuple[str, ParsedReply]:
         """Generate and parse one reply; re-ask once (not a new step) if it has no Action / Final Answer.
 
-        Appends the assistant reply (and the re-ask exchange, if any) to ``messages``.
+        Appends the assistant reply (and the re-ask exchange, if any) to ``messages``; a re-ask
+        is recorded in ``notes`` at ``at_step``.
         """
         reply = self._generate(messages)
         parsed = parse_reply(reply)
         if parsed.incomplete:
             self._log_unparsed(session_id, step, reply, parsed.error)
+            if notes is not None:
+                finish = getattr(self.llm, "last_finish_reason", None)
+                notes.append(AgentNote(step=at_step, kind="reask", text=truncate(
+                    f"Reply had no Action or Final Answer (finish_reason={finish}); asked to continue.\n"
+                    f"Reply: {reply.strip() or '<empty>'}", NOTE_CHARS)))
             first_thought = parsed.thought
             messages.append({"role": "assistant", "content": _OBS_RE.split(reply, maxsplit=1)[0].strip() or "(no reply)"})
             messages.append({"role": "user", "content": CONTINUE_PROMPT})
@@ -347,7 +369,7 @@ class ReActAgent:
 
     def _messages(self, session: Session, tools: dict[str, Tool], message: str) -> list[dict[str, str]]:
         listing = "\n".join(f"- {t.name}{t.signature()}: {t.description}" for t in tools.values())
-        names = sorted(set(load_doc_names().values()))
+        names = sorted(set(load_doc_names(chat_id=session.session_id).values()))  # this chat's documents
         documents = ", ".join(names[:MAX_LISTED_DOCS]) + (" ..." if len(names) > MAX_LISTED_DOCS else "")
         messages = [{"role": "system", "content": SYSTEM_TEMPLATE.format(tools=listing, documents=documents or "none")}]
         for turn in session.turns[-self.history_turns:] if self.history_turns > 0 else []:
@@ -380,15 +402,18 @@ class ReActAgent:
         tools = {t.name: t for t in self.tool_factory(session)}
         messages = self._messages(session, tools, message)
         steps: list[AgentStep] = []
+        notes: list[AgentNote] = []
         answer: str | None = None
         python_outputs: list[str] = []
         tools_used: set[str] = set()
 
         for _ in range(self.max_steps):
             step_start = time.perf_counter()
-            _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1)
+            _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1, notes, len(steps) + 1)
             if parsed.final is not None:
                 answer = parsed.final
+                if parsed.thought:
+                    notes.append(AgentNote(step=len(steps) + 1, kind="final_thought", text=truncate(parsed.thought, NOTE_CHARS)))
                 break
             model_used = None
             if parsed.action is not None:
@@ -412,7 +437,11 @@ class ReActAgent:
         if answer is None:
             log.info("Step limit (%d) reached; forcing a final answer", self.max_steps)
             messages.append({"role": "user", "content": FORCE_FINAL})
-            reply, parsed = self._step_reply(messages, session_id, "forced-final")
+            notes.append(AgentNote(step=len(steps) + 1, kind="step_limit",
+                                   text=f"Step limit ({self.max_steps}) reached; asked for a final answer from the observations so far."))
+            reply, parsed = self._step_reply(messages, session_id, "forced-final", notes, len(steps) + 1)
+            if parsed.thought:
+                notes.append(AgentNote(step=len(steps) + 1, kind="final_thought", text=truncate(parsed.thought, NOTE_CHARS)))
             if parsed.final is None and parsed.error is None:  # it asked for another tool
                 self._log_unparsed(session_id, "forced-final", reply, "tool call after the step limit")
             answer = parsed.final or parsed.thought or self._partial_answer(steps)
@@ -426,6 +455,12 @@ class ReActAgent:
         else:
             routed = self._route_final(message, answer, pdf_turn, retrieved, python_outputs)
         answer = routed.answer
+        route = f"Final answer by {routed.model_used}"
+        if routed.latency_ms is not None:
+            route += f" in {routed.latency_ms / 1000:.1f}s"
+        if routed.fallback_reason:
+            route += f" (fallback: {routed.fallback_reason})"
+        notes.append(AgentNote(step=len(steps) + 1, kind="routing", text=route))
         citations = citations_from_chunks(answer, retrieved, session) if retrieved else extract_citations(answer, session)
         session.turns.append(Turn(user=message, assistant=answer))
         self.store.save(session)
@@ -436,6 +471,7 @@ class ReActAgent:
             model_used=routed.model_used, latency_ms=routed.latency_ms, fallback_reason=routed.fallback_reason,
             images=list(dict.fromkeys(p for step in steps for p in step.images)),
             papers=[p for t in tools.values() for p in getattr(t, "papers", [])],
+            notes=notes,
         )
 
     @staticmethod
