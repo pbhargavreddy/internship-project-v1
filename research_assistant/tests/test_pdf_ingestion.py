@@ -78,19 +78,37 @@ def test_ingest_writes_jsonl_and_upload_endpoint(sample_pdf: Path, tmp_path: Pat
 
     from fastapi.testclient import TestClient
 
+    import backend.ingestion.names as names
+    import backend.storage.chats as chats
     from backend import main
+    from backend.config import Settings
+    from backend.retrieval import VectorStore
+    from backend.storage import documents
+    from tests.test_documents import BagOfWords
 
+    # Isolated chat store, names registry and ChromaDB; no MongoDB.
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path / "uploads")
-    monkeypatch.setattr(main, "CHUNKS_DIR", tmp_path / "api_chunks")
-    client = TestClient(main.app)
+    monkeypatch.setattr(names, "get_settings", lambda: Settings(_env_file=None, doc_names_file=tmp_path / "names.json"))
+    monkeypatch.setattr(documents, "get_db", lambda: None)
+    store = VectorStore(persist_dir=tmp_path / "chroma", collection_name="docs", embedder=BagOfWords())
+    monkeypatch.setattr(main, "get_vector_store", lambda: store)
+    chats.set_chat_store(chats.LocalChatStore(tmp_path / "chats"))
+    try:
+        client = TestClient(main.app)
+        chat_id = client.post("/chats", json={"name": "upload test"}).json()["chat_id"]
 
-    resp = client.post(
-        "/documents/upload",
-        files={"file": ("sample.pdf", sample_pdf.read_bytes(), "application/pdf")},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["chunk_count"] == len(chunks)
-    assert resp.json()["doc_id"] == chunks[0].doc_id
+        resp = client.post(
+            "/documents/upload", params={"chat_id": chat_id},
+            files={"file": ("sample.pdf", sample_pdf.read_bytes(), "application/pdf")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["chunk_count"] == len(chunks)
+        assert resp.json()["doc_id"] == chunks[0].doc_id
 
-    bad = client.post("/documents/upload", files={"file": ("x.pdf", b"not a pdf", "application/pdf")})
-    assert bad.status_code == 400
+        bad = client.post("/documents/upload", params={"chat_id": chat_id},
+                          files={"file": ("x.pdf", b"not a pdf", "application/pdf")})
+        assert bad.status_code == 400
+        missing = client.post("/documents/upload", files={"file": ("sample.pdf", b"%PDF-", "application/pdf")})
+        assert missing.status_code == 422  # chat_id is required
+    finally:
+        chats.set_chat_store(None)

@@ -77,6 +77,18 @@ def _model_badge(result: dict) -> str:
     return f" <span class='sp-badge sp-badge-{kind}'>{html.escape(text)}</span>"
 
 
+def _agent_badge(result: dict) -> str:
+    """Which agent-chain model ran the loop, e.g. "Agent: qwen3.8-27b (fallback)"."""
+    if result.get("degraded"):
+        return " <span class='sp-badge sp-badge-fallback'>Agent: unavailable (degraded mode)</span>"
+    model = result.get("agent_model")
+    if not model:
+        return ""
+    kind = "fallback" if result.get("agent_fallback") else "model"
+    text = f"Agent: {model}" + (" (fallback)" if result.get("agent_fallback") else "")
+    return f" <span class='sp-badge sp-badge-{kind}'>{html.escape(text)}</span>"
+
+
 # ── Chat dialogs ─────────────────────────────────────────────────────────────
 
 
@@ -280,7 +292,7 @@ def _render_papers(papers: list[dict], key: str) -> None:
                 st.rerun()  # refresh the sidebar's document list
 
 
-NOTE_LABELS = {"reask": "Re-ask", "final_thought": "Final thought", "step_limit": "Step limit", "routing": "Routing"}
+NOTE_LABELS = {"reask": "Re-ask", "final_thought": "Final thought", "step_limit": "Step limit", "routing": "Routing", "degraded": "Degraded mode"}
 
 
 def _render_step(i: int, step: dict) -> None:
@@ -319,7 +331,7 @@ def _render_agent_steps(result: dict) -> None:
 def render_answer(result: dict, key: str = "new") -> None:
     st.markdown(result["answer"])
     _render_images(result.get("images") or [p for step in result.get("steps", []) for p in step.get("images", [])])
-    badges = _badge(result.get("faithfulness")) + _model_badge(result)
+    badges = _badge(result.get("faithfulness")) + _model_badge(result) + _agent_badge(result)
     st.markdown(badges, unsafe_allow_html=True)
 
     faith = result.get("faithfulness") or {}

@@ -85,6 +85,9 @@ class ChatMessage(BaseModel):
     latency_ms: float | None = None
     fallback_reason: str | None = None
     faithfulness: FaithfulnessResult | None = None
+    agent_model: str | None = None
+    agent_fallback: bool = False
+    degraded: bool = False
 
     @field_validator("steps")
     @classmethod
@@ -102,6 +105,7 @@ class ChatMessage(BaseModel):
             citations=result.citations, papers=result.papers, images=result.images, steps=result.steps,
             notes=result.notes,
             latency_ms=result.latency_ms, fallback_reason=result.fallback_reason, faithfulness=result.faithfulness,
+            agent_model=result.agent_model, agent_fallback=result.agent_fallback, degraded=result.degraded,
         )
 
 

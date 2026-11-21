@@ -37,8 +37,11 @@ from backend.config import get_settings
 from backend.eval.faithfulness import FaithfulnessResult
 from backend.ingestion import Chunk
 from backend.ingestion.names import load_doc_names
-from backend.llm import LLM, get_llm
-from backend.llm.router import FinetunedRouter, RoutedAnswer, api_llm_label, generate_pdf_answer, get_router
+from backend.llm import LLM, AllModelsFailedError, get_llm
+from backend.llm.router import (
+    ANSWER_MAX_TOKENS, ANSWER_TEMPERATURE, FINETUNED_LABEL, FinetunedRouter, RoutedAnswer, api_llm_label,
+    build_pdf_prompt, generate_pdf_answer, get_router,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +58,15 @@ MAX_LISTED_DOCS = 30
 PYTHON_TOOL = "python_interpreter"
 FINAL_RETRY_PROMPT = "Write your final answer now in plain text using the tool results above. Do not call any tools."
 _TOOL_CALL_400 = ("Tool choice is none", "tool_use_failed")
-
+RAG_TOOL = "rag_search"
+# Degraded mode (every agent model down): which messages are answered by a direct paper search.
+PAPER_QUERY_RE = re.compile(r"\bpapers?\s+(on|about)\b|\bfind\s+(\w+\s+){0,2}papers?\b|\bresearch\s+on\b", re.I)
+_PAPER_PREFIX_RE = re.compile(
+    r"^\s*(please\s+)?((find|search\s+for|search|get|show|list)\s+)?(me\s+)?((some|recent|good)\s+)*"
+    r"(papers?|research)\s+(on|about)\s+", re.I)
+AGENT_UNAVAILABLE = ("The agent model is temporarily unavailable (rate limit). Paper search and questions "
+                     "about your uploaded PDFs still work.")
+DEGRADED_LABEL = "degraded mode"
 
 SYSTEM_TEMPLATE = """You are ScholarPulse, a research assistant that reasons step by step and calls tools.
 
@@ -144,6 +155,9 @@ class AgentResult(BaseModel):
     images: list[str] = Field(default_factory=list, description="PNGs saved this turn (paths under data/plots)")
     papers: list[PaperRef] = Field(default_factory=list, description="Papers found by paper_search this turn")
     notes: list[AgentNote] = Field(default_factory=list, description="Agent log events besides tool steps")
+    agent_model: str | None = Field(None, description="Chain model that ran the agent loop, e.g. qwen3.8-27b")
+    agent_fallback: bool = Field(False, description="True if agent_model is not the first model in AGENT_MODELS")
+    degraded: bool = Field(False, description="True if every agent model failed and degraded mode answered")
     # Texts of the retrieved chunks the answer cites (all retrieved chunks if it cites none).
     # Used for the faithfulness check; not sent to clients.
     cited_chunks: list[str] = Field(default_factory=list, exclude=True)
@@ -465,9 +479,19 @@ class ReActAgent:
     def chat(self, session_id: str, message: str) -> AgentResult:
         """Answer ``message`` in ``session_id``'s conversation and save the turn.
 
+        If every agent model fails, :meth:`_degraded` answers instead (no exception).
+
         Raises:
             ValueError: If ``session_id`` is malformed.
         """
+        try:
+            return self._chat_turn(session_id, message)
+        except AllModelsFailedError as exc:
+            return self._degraded(session_id, message, exc)
+
+    def _chat_turn(self, session_id: str, message: str) -> AgentResult:
+        if hasattr(self.llm, "begin_turn"):
+            self.llm.begin_turn()
         session = self.store.load(session_id)
         tools = {t.name: t for t in self.tool_factory(session)}
         messages = self._messages(session, tools, message)
@@ -525,6 +549,9 @@ class ReActAgent:
             routed = RoutedAnswer(answer=summary, model_used=tools[SUMMARY_TOOL].model_used or api_llm_label())
         else:
             routed = self._route_final(message, answer, pdf_turn, retrieved, python_outputs)
+        last = getattr(self.llm, "last_reply", None)
+        if last is not None and routed.model_used == api_llm_label():
+            routed.model_used = f"{'Groq ' if last.model.provider == 'groq' else ''}{last.model.short_name}"
         answer = routed.answer
         route = f"Final answer by {routed.model_used}"
         if routed.latency_ms is not None:
@@ -543,6 +570,60 @@ class ReActAgent:
             images=list(dict.fromkeys(p for step in steps for p in step.images)),
             papers=[p for t in tools.values() for p in getattr(t, "papers", [])],
             notes=notes,
+            agent_model=last.model.short_name if last is not None else None,
+            agent_fallback=bool(last and last.fallback),
+        )
+
+    def _degraded(self, session_id: str, message: str, exc: AllModelsFailedError) -> AgentResult:
+        """Answer without the agent LLM: direct paper search, PDF question via the fine-tuned
+        model, or a fixed "temporarily unavailable" message."""
+        log.warning("All agent models failed; answering in degraded mode: %s", exc)
+        session = self.store.load(session_id)
+        tools = {t.name: t for t in self.tool_factory(session)}
+        notes = [AgentNote(step=1, kind="degraded", text=truncate(str(exc), NOTE_CHARS))]
+        steps: list[AgentStep] = []
+        retrieved: list[tuple[int, Chunk]] = []
+        model_used, latency = DEGRADED_LABEL, None
+
+        def run(tool: str, args: dict[str, Any]) -> str:
+            obs = self._run_tool(tools, ToolCall(tool=tool, args=args))
+            steps.append(AgentStep(thought="Degraded mode: agent model unavailable", tool=tool, args=args,
+                                   observation=truncate(obs, STEP_OBS_CHARS)))
+            return obs
+
+        if PAPER_TOOL in tools and PAPER_QUERY_RE.search(message):
+            query = _PAPER_PREFIX_RE.sub("", message).strip(" ?.!") or message
+            obs = run(PAPER_TOOL, {"query": query})
+            if getattr(tools[PAPER_TOOL], "papers", []):
+                answer = f'The agent model is temporarily unavailable, so here are the results of a direct paper search for "{query}".'
+            else:
+                answer = f'The agent model is temporarily unavailable, and a direct paper search for "{query}" returned: {obs}'
+            model_used = f"paper_search ({DEGRADED_LABEL})"
+        elif RAG_TOOL in tools and load_doc_names(chat_id=session_id):
+            run(RAG_TOOL, {"query": message})
+            retrieved = _unique_chunks(getattr(tools[RAG_TOOL], "retrieved", []))
+            if not retrieved:
+                answer = "The agent model is temporarily unavailable, and no passages in your uploaded PDFs matched this question."
+            else:
+                result = self.router.complete(build_pdf_prompt(message, retrieved, []),
+                                              max_tokens=ANSWER_MAX_TOKENS, temperature=ANSWER_TEMPERATURE)
+                if result.text is not None:
+                    answer, model_used, latency = result.text, FINETUNED_LABEL, result.latency_ms
+                else:
+                    answer = ("The agent model is temporarily unavailable (rate limit), and the fine-tuned PDF model "
+                              f"is unreachable ({result.fallback_reason}). Please try again in a minute.")
+                    retrieved = []
+        else:
+            answer = AGENT_UNAVAILABLE
+        notes.append(AgentNote(step=len(steps) + 1, kind="routing", text=f"Final answer by {model_used}"))
+        citations = citations_from_chunks(answer, retrieved, session) if retrieved else []
+        session.turns.append(Turn(user=message, assistant=answer))
+        self.store.save(session)
+        return AgentResult(
+            answer=answer, citations=citations, steps=steps, model_used=model_used, latency_ms=latency,
+            cited_chunks=[ch.text for _, ch in retrieved],
+            papers=[p for t in tools.values() for p in getattr(t, "papers", [])],
+            notes=notes, degraded=True,
         )
 
     @staticmethod

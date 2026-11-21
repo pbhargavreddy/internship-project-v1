@@ -17,8 +17,9 @@ import pytest
 from pydantic import BaseModel
 
 from backend.agent import ReActAgent, Session, SessionStore, Tool, run_python
-from backend.agent.react import FINAL_RETRY_PROMPT
-from backend.agent.tools import PaperRef, PythonInterpreterTool, RagSearchTool
+from backend.agent.react import AGENT_UNAVAILABLE, FINAL_RETRY_PROMPT
+from backend.agent.tools import PaperRef, PaperSearchArgs, PythonInterpreterTool, RagSearchTool
+from backend.llm import AllModelsFailedError
 from backend.config import Settings
 from backend.ingestion import Chunk
 from backend.llm.router import FinetunedRouter
@@ -273,3 +274,44 @@ def test_other_bad_request_still_raises(tmp_path: Path) -> None:
     with pytest.raises(openai.BadRequestError):
         _agent(FakeLLM(script), tmp_path).chat("g3", "hi")
 
+
+# --- degraded mode (every agent model failed) ---------------------------------
+
+class _DownLLM:
+    def generate(self, messages: list[dict[str, str]], max_tokens: int = 512, temperature: float = 0.0) -> str:
+        raise AllModelsFailedError("All agent models failed: groq:a: RateLimitError")
+
+
+def test_degraded_paper_search_and_plain_message(tmp_path: Path) -> None:
+    ref = PaperRef(id="arxiv:1", title="Attention", url="https://arxiv.org/abs/1", source="arxiv")
+    queries: list[str] = []
+
+    class Papers(Tool):
+        name = "paper_search"
+        description = "fake"
+        args_model = PaperSearchArgs
+
+        def __init__(self) -> None:
+            self.papers: list[PaperRef] = []
+
+        def run(self, args: PaperSearchArgs) -> str:
+            queries.append(args.query)
+            self.papers.append(ref)
+            return "1. [Attention](https://arxiv.org/abs/1)"
+
+    agent = ReActAgent(llm=_DownLLM(), store=SessionStore(tmp_path), tool_factory=lambda s: [Papers()],
+                       router=FinetunedRouter(settings=Settings(_env_file=None)))
+    result = agent.chat("d1", "find papers on attention")
+    assert result.degraded and result.papers == [ref] and queries == ["attention"]
+
+    result = agent.chat("d1", "what is 2+2?")
+    assert result.degraded and result.answer == AGENT_UNAVAILABLE
+
+
+def test_degraded_pdf_question_without_finetuned_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import backend.agent.react as react
+    monkeypatch.setattr(react, "load_doc_names", lambda chat_id=None: {"abc123": "R6.pdf"})
+    agent = _agent(_DownLLM(), tmp_path)  # offline router: FINETUNED_BASE_URL not set
+    result = agent.chat("d2", "Summarize R6.pdf")
+    assert result.degraded and result.steps[0].tool == "rag_search"
+    assert "fine-tuned PDF model is unreachable" in result.answer and "Groq" not in result.answer

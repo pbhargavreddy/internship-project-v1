@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
     llm_reasoning_effort: str = "low"  # sent only to openai/gpt-oss reasoning models
+    # Agent fallback chain: comma-separated "groq:<model>" entries, tried in order.
+    agent_models: str = "groq:openai/gpt-oss-120b,groq:qwen/qwen3.8-27b,groq:openai/gpt-oss-20b"
+    # Optional OpenAI-compatible endpoint appended to the chain when BASE_URL and MODEL are set.
+    fallback_base_url: str = ""
+    fallback_api_key: SecretStr | None = None
+    fallback_model: str = ""
     local_base_model: str = "Qwen/Qwen2.5-1.5B-Instruct"  # notebooks only, not the backend
     local_adapter_dir: Path = Path("data/models/qlora_adapter")
 
