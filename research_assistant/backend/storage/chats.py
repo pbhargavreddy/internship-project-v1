@@ -309,6 +309,15 @@ def delete_chat(chat_id: str) -> bool:
     return get_chat_store().delete(chat_id)
 
 
+def _answer_with_papers(msg: ChatMessage) -> str:
+    """The stored answer, plus the "Papers found" table as a numbered list if the answer doesn't
+    already link every paper (so "the first one" can be resolved in a later turn)."""
+    if not msg.papers or all(p.url in msg.content for p in msg.papers):
+        return msg.content
+    rows = [f"{i}. [{p.title}]({p.url}) ({p.year or 'n.d.'})" for i, p in enumerate(msg.papers, 1)]
+    return msg.content + "\n\nPapers found:\n" + "\n".join(rows)
+
+
 def history_turns(chat: Chat, n: int) -> list[Turn]:
     """The last ``n`` complete (user, agent) exchanges of ``chat``; unanswered user messages are skipped."""
     turns: list[Turn] = []
@@ -317,7 +326,7 @@ def history_turns(chat: Chat, n: int) -> list[Turn]:
         if msg.role == "user":
             pending = msg.content
         elif pending is not None:
-            turns.append(Turn(user=pending, assistant=msg.content))
+            turns.append(Turn(user=pending, assistant=_answer_with_papers(msg)))
             pending = None
     return turns[-n:] if n > 0 else []
 

@@ -403,7 +403,8 @@ def health_storage() -> StorageStatus:
 def agent_chat(body: ChatRequest) -> AgentResult:  # sync def: LLM + tools block, so run in threadpool
     """Run one agent turn in a stored chat and save both the user and the agent message.
 
-    The prompt history is the chat's last ``agent_history_turns`` stored exchanges.
+    The prompt history is this chat's last ``agent_history_messages`` stored messages (final answers
+    only), trimmed to ``agent_history_max_tokens`` by the agent.
     """
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="message must not be blank")
@@ -416,7 +417,7 @@ def agent_chat(body: ChatRequest) -> AgentResult:  # sync def: LLM + tools block
             "Please rephrase your question.",
         )
     chat = _chat_or_404(body.chat_id)
-    turns = history_turns(chat, get_settings().agent_history_turns)
+    turns = history_turns(chat, get_settings().agent_history_messages)  # trimmed further in the agent
     try:
         agent = ReActAgent(store=ChatHistorySessionStore(turns))
     except EnvironmentError as exc:

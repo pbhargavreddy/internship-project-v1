@@ -315,3 +315,67 @@ def test_degraded_pdf_question_without_finetuned_model(tmp_path: Path, monkeypat
     result = agent.chat("d2", "Summarize R6.pdf")
     assert result.degraded and result.steps[0].tool == "rag_search"
     assert "fine-tuned PDF model is unreachable" in result.answer and "Groq" not in result.answer
+
+
+# --- per-chat conversation memory ---------------------------------------------
+
+def test_history_is_trimmed_oldest_first_to_the_token_cap() -> None:
+    from backend.agent.memory import Turn, trim_history
+
+    turns = [Turn(user=f"q{i}", assistant=("word " * 400) + f"a{i}") for i in range(6)]  # ~400 tokens each
+    kept = trim_history(turns, max_messages=10, max_tokens=1000)
+    assert [t.user for t in kept] == ["q4", "q5"]  # 5 turns allowed by count, 2 fit the cap
+    assert [t.user for t in trim_history(turns, max_messages=4, max_tokens=10_000)] == ["q4", "q5"]
+    huge = trim_history([Turn(user="q", assistant="word " * 5000)], max_messages=10, max_tokens=100)
+    assert len(huge) == 1 and len(huge[0].assistant) < 1000  # newest turn kept, answer cut
+
+
+def test_follow_up_is_rewritten_for_retrieval_and_finetuned_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import backend.agent.react as react
+    from backend.agent.memory import Turn
+
+    store = SessionStore(tmp_path)
+    session = store.load("m1")
+    session.turns.append(Turn(user="summarize R6.pdf", assistant="R6.pdf proposes a dehazing transformer."))
+    store.save(session)
+
+    queries: list[str] = []
+
+    def retrieve(query: str, k: int) -> list[tuple[Chunk, float]]:
+        queries.append(query)
+        return _fake_retrieve(query, k)
+
+    seen: dict[str, str] = {}
+
+    def fake_pdf_answer(question, rag_chunks, other, draft, router=None):  # noqa: ANN001
+        seen["question"] = question
+        return react.RoutedAnswer(answer=draft, model_used="test")
+
+    monkeypatch.setattr(react, "generate_pdf_answer", fake_pdf_answer)
+    prompts: list[list[dict[str, str]]] = []
+    replies = iter([
+        f'Thought: look\nAction: {json.dumps({"tool": "rag_search", "args": {"query": "dataset it used"}})}',
+        "Which dataset did R6.pdf use?",  # the rewrite call
+        "Final Answer: It used RESIDE [Doc 1, Sec Introduction].",
+    ])
+
+    def script(messages: list[dict[str, str]]) -> str:
+        prompts.append(messages)
+        return next(replies)
+
+    agent = ReActAgent(llm=FakeLLM(script), store=store, router=FinetunedRouter(settings=Settings(_env_file=None)),
+                       tool_factory=lambda s: [RagSearchTool(s, retrieve_fn=retrieve)])
+    result = agent.chat("m1", "what dataset did it use?")
+
+    assert queries == ["Which dataset did R6.pdf use?"]
+    assert seen["question"] == "Which dataset did R6.pdf use?"
+    assert prompts[0][1:3] == [{"role": "user", "content": "summarize R6.pdf"},
+                               {"role": "assistant", "content": "R6.pdf proposes a dehazing transformer."}]
+    assert any(n.kind == "standalone" for n in result.notes)
+
+
+def test_no_rewrite_call_without_history(tmp_path: Path) -> None:
+    action = json.dumps({"tool": "rag_search", "args": {"query": "attention"}})
+    llm = FakeLLM(_replies(f"Thought: s\nAction: {action}", "Final Answer: done"))
+    _agent(llm, tmp_path).chat("m2", "How does attention work?")
+    assert llm.calls == 2

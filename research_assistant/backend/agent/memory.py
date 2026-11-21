@@ -41,6 +41,41 @@ class Turn(BaseModel):
     assistant: str
 
 
+def _count_tokens(text: str) -> int:
+    import tiktoken
+
+    return len(tiktoken.get_encoding("cl100k_base").encode(text))
+
+
+def trim_history(turns: list[Turn], max_messages: int, max_tokens: int) -> list[Turn]:
+    """The newest turns that fit in ``max_messages`` messages and ``max_tokens`` tokens.
+
+    Whole turns are dropped oldest-first. If even the newest turn alone is over the cap,
+    its answer is cut so the reference the user is following up on survives.
+
+    Args:
+        turns: Past turns, oldest first.
+        max_messages: Message budget; each turn is 2 messages (user + assistant).
+        max_tokens: Token budget (tiktoken ``cl100k_base``) over all kept messages.
+
+    Returns:
+        The kept turns, oldest first.
+    """
+    n = max_messages // 2
+    kept = list(turns[-n:]) if n > 0 else []
+    costs = [_count_tokens(t.user) + _count_tokens(t.assistant) for t in kept]
+    while len(kept) > 1 and sum(costs) > max_tokens:
+        kept.pop(0)
+        costs.pop(0)
+    if kept and costs[0] > max_tokens:
+        import tiktoken
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        budget = max(max_tokens - _count_tokens(kept[0].user), 0)
+        kept[0] = Turn(user=kept[0].user, assistant=enc.decode(enc.encode(kept[0].assistant)[:budget]))
+    return kept
+
+
 class Session(BaseModel):
     """Everything the agent remembers about one conversation."""
 

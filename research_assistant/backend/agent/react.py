@@ -31,7 +31,7 @@ from typing import Any
 import openai
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.agent.memory import Citation, Session, SessionStore, Turn
+from backend.agent.memory import Citation, Session, SessionStore, Turn, trim_history
 from backend.agent.tools import PaperRef, Tool, default_tools, truncate
 from backend.config import get_settings
 from backend.eval.faithfulness import FaithfulnessResult
@@ -67,6 +67,14 @@ _PAPER_PREFIX_RE = re.compile(
 AGENT_UNAVAILABLE = ("The agent model is temporarily unavailable (rate limit). Paper search and questions "
                      "about your uploaded PDFs still work.")
 DEGRADED_LABEL = "degraded mode"
+REWRITE_MAX_TOKENS = 400  # gpt-oss spends some of it on reasoning
+REWRITE_ANSWER_CHARS = 1500  # per past answer, in the rewrite prompt
+REWRITE_PROMPT = (
+    "Rewrite the user's latest message as one standalone question that can be understood without the "
+    "conversation. Replace references such as 'it', 'that paper' or 'the first one' with the exact paper "
+    "title or filename from the conversation. If the message is already standalone, return it unchanged. "
+    "Reply with the question only."
+)
 
 SYSTEM_TEMPLATE = """You are ScholarPulse, a research assistant that reasons step by step and calls tools.
 
@@ -137,7 +145,7 @@ class AgentNote(BaseModel):
     """A non-tool event in a turn, for the UI's agent log (re-asks, final thought, routing)."""
 
     step: int = Field(..., description="Shown before this step number (len(steps) + 1 = after the last step)")
-    kind: str = Field(..., description="reask | final_thought | step_limit | routing")
+    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone")
     text: str
 
 
@@ -381,7 +389,9 @@ class ReActAgent:
         store: Session persistence. Defaults to ``SessionStore()``.
         tool_factory: Builds the tools for a session. Defaults to :func:`default_tools`.
         max_steps: Tool-step limit. Defaults to ``settings.agent_max_steps``.
-        history_turns: Past turns included in the prompt. Defaults to ``settings.agent_history_turns``.
+        history_messages: Past messages (2 per turn) in the prompt. Defaults to ``settings.agent_history_messages``.
+        history_max_tokens: Token cap on that history (oldest dropped first). Defaults to
+            ``settings.agent_history_max_tokens``.
         router: Fine-tuned endpoint router for PDF answers. Defaults to :func:`get_router`.
         raw_log_path: Where unparseable replies are logged. Defaults to ``settings.agent_raw_log``.
     """
@@ -392,7 +402,8 @@ class ReActAgent:
         store: SessionStore | None = None,
         tool_factory: Callable[[Session], list[Tool]] | None = None,
         max_steps: int | None = None,
-        history_turns: int | None = None,
+        history_messages: int | None = None,
+        history_max_tokens: int | None = None,
         router: FinetunedRouter | None = None,
         raw_log_path: str | Path | None = None,
     ) -> None:
@@ -401,7 +412,10 @@ class ReActAgent:
         self.store: SessionStore = store or SessionStore()
         self.tool_factory = tool_factory or default_tools
         self.max_steps: int = max_steps if max_steps is not None else settings.agent_max_steps
-        self.history_turns: int = history_turns if history_turns is not None else settings.agent_history_turns
+        self.history_messages: int = (
+            history_messages if history_messages is not None else settings.agent_history_messages)
+        self.history_max_tokens: int = (
+            history_max_tokens if history_max_tokens is not None else settings.agent_history_max_tokens)
         self.router: FinetunedRouter = router or get_router()
         self.raw_log_path: Path = Path(raw_log_path or settings.agent_raw_log)
         # Test doubles may not accept ``stop``; only pass it to LLMs that do.
@@ -456,10 +470,33 @@ class ReActAgent:
         names = sorted(set(load_doc_names(chat_id=session.session_id).values()))  # this chat's documents
         documents = ", ".join(names[:MAX_LISTED_DOCS]) + (" ..." if len(names) > MAX_LISTED_DOCS else "")
         messages = [{"role": "system", "content": SYSTEM_TEMPLATE.format(tools=listing, documents=documents or "none")}]
-        for turn in session.turns[-self.history_turns:] if self.history_turns > 0 else []:
+        for turn in self._history(session):
             messages += [{"role": "user", "content": turn.user}, {"role": "assistant", "content": turn.assistant}]
         messages.append({"role": "user", "content": CURRENT_PREFIX + message})
         return messages
+
+    def _history(self, session: Session) -> list[Turn]:
+        """This chat's past turns (final answers only), trimmed to the message and token caps."""
+        return trim_history(session.turns, self.history_messages, self.history_max_tokens)
+
+    def _standalone_question(self, session: Session, message: str) -> str:
+        """Rewrite a follow-up into a standalone question with one short LLM call.
+
+        Returns ``message`` unchanged if there is no history or the call fails.
+        """
+        history = self._history(session)
+        if not history:
+            return message
+        convo = "\n\n".join(f"User: {t.user}\nAssistant: {truncate(t.assistant, REWRITE_ANSWER_CHARS)}" for t in history)
+        prompt = [{"role": "system", "content": REWRITE_PROMPT},
+                  {"role": "user", "content": f"Conversation:\n{convo}\n\nLatest message: {message}"}]
+        try:
+            reply = self.llm.generate(prompt, max_tokens=REWRITE_MAX_TOKENS, temperature=0.0)
+        except Exception as exc:  # noqa: BLE001 — retrieval still works with the raw message
+            log.warning("Standalone-question rewrite failed; using the raw message: %s", exc)
+            return message
+        lines = [ln.strip().strip('"') for ln in (reply or "").splitlines() if ln.strip()]
+        return lines[0] if lines else message
 
     @staticmethod
     def _run_tool(tools: dict[str, Tool], call: ToolCall) -> str:
@@ -501,6 +538,8 @@ class ReActAgent:
         python_outputs: list[str] = []
         tools_used: set[str] = set()
         fallback = lambda: fallback_answer(tools, steps)  # noqa: E731
+        standalone: str | None = None  # follow-up rewritten with this chat's history, computed lazily
+        rag_rewritten = False
 
         for _ in range(self.max_steps):
             step_start = time.perf_counter()
@@ -512,6 +551,16 @@ class ReActAgent:
                 break
             model_used = None
             if parsed.action is not None:
+                if parsed.action.tool in PDF_TOOLS and standalone is None:
+                    standalone = self._standalone_question(session, message)
+                    if standalone != message:
+                        notes.append(AgentNote(step=len(steps) + 1, kind="standalone",
+                                               text=truncate(f"Standalone question: {standalone}", NOTE_CHARS)))
+                if parsed.action.tool == RAG_TOOL and not rag_rewritten and standalone not in (None, message):
+                    # The first retrieval of a follow-up uses the standalone question; later
+                    # rag_search calls keep the agent's own query.
+                    parsed.action.args = {**parsed.action.args, "query": standalone}
+                    rag_rewritten = True
                 observation = self._run_tool(tools, parsed.action)
                 tool, args = parsed.action.tool, parsed.action.args
                 model_used = getattr(tools.get(tool), "model_used", None)
@@ -548,7 +597,7 @@ class ReActAgent:
             # A pure summary turn: show the section-by-section summary itself, not a rewrite of it.
             routed = RoutedAnswer(answer=summary, model_used=tools[SUMMARY_TOOL].model_used or api_llm_label())
         else:
-            routed = self._route_final(message, answer, pdf_turn, retrieved, python_outputs)
+            routed = self._route_final(standalone or message, answer, pdf_turn, retrieved, python_outputs)
         last = getattr(self.llm, "last_reply", None)
         if last is not None and routed.model_used == api_llm_label():
             routed.model_used = f"{'Groq ' if last.model.provider == 'groq' else ''}{last.model.short_name}"

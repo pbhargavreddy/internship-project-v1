@@ -94,7 +94,8 @@ class Settings(BaseSettings):
     # ── ReAct agent (backend/agent/) ─────────────────────────────────────────
     sessions_dir: Path = Path("data/sessions")
     agent_max_steps: int = 8
-    agent_history_turns: int = 6
+    agent_history_messages: int = 10  # past chat messages (user + assistant) sent to the agent
+    agent_history_max_tokens: int = 3000  # history token cap; the oldest turns are dropped first
     agent_output_dir: Path = Path("data/plots")  # python_interpreter PNGs, served at /plots
     agent_raw_log: Path = Path("data/logs/agent_raw.log")  # raw LLM replies that failed to parse
     python_timeout_seconds: float = 15.0

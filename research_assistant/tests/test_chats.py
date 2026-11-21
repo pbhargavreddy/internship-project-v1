@@ -94,3 +94,17 @@ def test_unreachable_mongo_falls_back_to_local_json(
         chats.set_chat_store(None)
         mongo.set_db(None)
         monkeypatch.setattr(mongo, "_checked", False)
+
+
+def test_history_includes_papers_and_never_mixes_chats(store: MongoChatStore) -> None:
+    from backend.agent.tools import PaperRef
+
+    a, b = chats.create_chat("A"), chats.create_chat("B")
+    paper = PaperRef(id="arxiv:1706.03762", title="Attention Is All You Need", year=2017,
+                     url="https://arxiv.org/abs/1706.03762", source="arxiv")
+    chats.append_message(a.chat_id, ChatMessage(role="user", content="find papers on attention"))
+    chats.append_message(a.chat_id, ChatMessage(role="agent", content="Here are the papers I found.", papers=[paper]))
+
+    turns_a = chats.history_turns(chats.get_chat(a.chat_id), 10)
+    assert "1. [Attention Is All You Need](https://arxiv.org/abs/1706.03762) (2017)" in turns_a[0].assistant
+    assert chats.history_turns(chats.get_chat(b.chat_id), 10) == []
