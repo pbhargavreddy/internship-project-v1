@@ -6,3 +6,5 @@ internship_venv
 .agents
 __pycache__
 pyproject.toml
+*.log
+research_assistant/data/models/reranker.pt
