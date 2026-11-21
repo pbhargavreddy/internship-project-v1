@@ -150,7 +150,7 @@ class AgentNote(BaseModel):
     """A non-tool event in a turn, for the UI's agent log (re-asks, final thought, routing)."""
 
     step: int = Field(..., description="Shown before this step number (len(steps) + 1 = after the last step)")
-    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone | rate_limit | unmarked_final")
+    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone | rate_limit | unmarked_final | summary_final")
     text: str
 
 
@@ -692,6 +692,14 @@ class ReActAgent:
                                    observation=truncate(observation, STEP_OBS_CHARS), images=images,
                                    total_ms=total_ms, model_used=model_used))
             messages.append({"role": "user", "content": OBS_PREFIX + truncate(observation, self.obs_max_chars)})
+            summary = getattr(tools.get(SUMMARY_TOOL), "last_summary", None) if tool == SUMMARY_TOOL else None
+            if summary and not tools_used & {RAG_TOOL, PAPER_TOOL}:
+                # A pure summary turn returns the summary itself (see the routing below), so the
+                # Groq final answer that would follow is discarded anyway: skip that call.
+                answer = summary
+                notes.append(AgentNote(step=len(steps) + 1, kind="summary_final",
+                                       text="summarize_papers succeeded; returned its summary without another LLM call."))
+                break
 
         if answer is None:
             log.info("Step limit (%d) reached; forcing a final answer", self.max_steps)

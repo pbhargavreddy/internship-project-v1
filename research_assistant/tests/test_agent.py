@@ -474,3 +474,37 @@ def test_unmarked_answer_after_paper_search_is_accepted_without_reask(tmp_path: 
     result = agent.chat("u2", "find papers on attention")
     assert result.answer == LONG_ANSWER and llm.calls == 2  # no re-ask
     assert any(n.kind == "unmarked_final" for n in result.notes)
+
+
+# --- summarize_papers ends the turn -------------------------------------------
+
+class _FakeSummary(Tool):
+    name = "summarize_papers"
+    description = "fake"
+    args_model = PaperSearchArgs  # any model with a str field; args aren't checked here
+
+    def __init__(self, summary: str | None) -> None:
+        self.summary, self.last_summary, self.model_used, self.retrieved = summary, None, None, []
+
+    def run(self, args: PaperSearchArgs) -> str:
+        self.last_summary = self.summary
+        return self.summary or "Error: could not summarize R6.pdf"
+
+
+def test_successful_summary_skips_the_final_llm_call(tmp_path: Path) -> None:
+    action = json.dumps({"tool": "summarize_papers", "args": {"query": "R6.pdf"}})
+    llm = FakeLLM(_replies(f"Thought: summarize\nAction: {action}"))  # a second call would raise StopIteration
+    agent = ReActAgent(llm=llm, store=SessionStore(tmp_path), tool_factory=lambda s: [_FakeSummary("**Summary of R6.pdf**\n\nObjective: dehazing.")],
+                       router=FinetunedRouter(settings=Settings(_env_file=None)))
+    result = agent.chat("sum1", "summarize R6.pdf")
+    assert llm.calls == 1 and result.answer.startswith("**Summary of R6.pdf**")
+    assert any(n.kind == "summary_final" for n in result.notes)
+
+
+def test_failed_summary_keeps_asking_the_model(tmp_path: Path) -> None:
+    action = json.dumps({"tool": "summarize_papers", "args": {"query": "R6.pdf"}})
+    llm = FakeLLM(_replies(f"Thought: summarize\nAction: {action}", "Final Answer: Sorry, I could not summarize it."))
+    agent = ReActAgent(llm=llm, store=SessionStore(tmp_path), tool_factory=lambda s: [_FakeSummary(None)],
+                       router=FinetunedRouter(settings=Settings(_env_file=None)))
+    result = agent.chat("sum2", "summarize R6.pdf")
+    assert llm.calls == 2 and result.answer == "Sorry, I could not summarize it."
