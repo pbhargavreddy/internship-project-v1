@@ -379,3 +379,12 @@ def test_no_rewrite_call_without_history(tmp_path: Path) -> None:
     llm = FakeLLM(_replies(f"Thought: s\nAction: {action}", "Final Answer: done"))
     _agent(llm, tmp_path).chat("m2", "How does attention work?")
     assert llm.calls == 2
+
+
+def test_doc_filtered_query_drops_the_filename() -> None:
+    from backend.agent.tools import GENERIC_DOC_QUERY, strip_doc_name
+
+    assert strip_doc_name("What dataset did the paper R6.pdf use?", "R6.pdf") == "What dataset did the paper use?"
+    assert strip_doc_name("what does R6 say about FPGA latency", "R6.pdf") == "what does say about FPGA latency"
+    assert strip_doc_name("R6.pdf", "R6.pdf") == GENERIC_DOC_QUERY
+    assert strip_doc_name("dataset of doc 3", "Doc 3") == "dataset of doc 3"

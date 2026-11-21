@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     reranker_path: Path = Path("data/models/reranker.pt")
     reranker_max_length: int = 256
     rerank_candidates: int = 10
+    # Reciprocal-rank fusion of vector and reranker order (score = 1/(k+vec_rank) + 1/(k+rerank_rank)).
+    # The trained reranker alone can bury the best vector hit; 0 = reranker order only.
+    rerank_fusion_k: int = 60
 
     # ── paper_search ingestion (backend/agent/tools.py) ──────────────────────
     ingest_max_papers: int = 2

@@ -2,7 +2,8 @@
 search.py
 ---------
 Two-stage retrieval entry point: ChromaDB vector search, then optional
-cross-encoder reranking. Shared by ``GET /rag/search`` and the agent's
+cross-encoder reranking fused with the vector order (reciprocal-rank fusion,
+``RERANK_FUSION_K``). Shared by ``GET /rag/search`` and the agent's
 ``rag_search`` tool.
 """
 
@@ -46,5 +47,30 @@ def retrieve(
     store = get_vector_store()
     if reranker is None:
         return store.search(query, k=k, doc_ids=doc_ids, chat_id=chat_id)
-    candidates = store.search(query, k=max(k, get_settings().rerank_candidates), doc_ids=doc_ids, chat_id=chat_id)
-    return reranker.rerank(query, [chunk for chunk, _ in candidates], top_k=k)
+    settings = get_settings()
+    candidates = store.search(query, k=max(k, settings.rerank_candidates), doc_ids=doc_ids, chat_id=chat_id)
+    reranked = reranker.rerank(query, [chunk for chunk, _ in candidates], top_k=len(candidates))
+    if settings.rerank_fusion_k <= 0:
+        return reranked[:k]
+    return fuse_ranks([c for c, _ in candidates], [c for c, _ in reranked], settings.rerank_fusion_k)[:k]
+
+
+def fuse_ranks(vector_order: list[Chunk], rerank_order: list[Chunk], fusion_k: int) -> list[tuple[Chunk, float]]:
+    """Reciprocal-rank fusion: ``1/(k + vector_rank) + 1/(k + rerank_rank)``, best first.
+
+    Keeps a strong vector hit that the reranker scores low (e.g. because the relevant
+    sentence is past its 256-token window) from dropping out of the top-k.
+
+    Args:
+        vector_order: Candidates in vector-search order.
+        rerank_order: The same candidates in reranker order.
+        fusion_k: RRF constant (60 is the usual default).
+
+    Returns:
+        ``(chunk, fused score)`` pairs, best first.
+    """
+    vec = {c.chunk_id: i for i, c in enumerate(vector_order, 1)}
+    rer = {c.chunk_id: i for i, c in enumerate(rerank_order, 1)}
+    worst = len(vector_order) + 1
+    scored = [(c, 1 / (fusion_k + vec[c.chunk_id]) + 1 / (fusion_k + rer.get(c.chunk_id, worst))) for c in vector_order]
+    return sorted(scored, key=lambda pair: -pair[1])

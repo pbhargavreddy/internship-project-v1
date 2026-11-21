@@ -146,6 +146,21 @@ def _chat_retrieve(chat_id: str) -> DocRetrieveFn:
 GENERIC_DOC_QUERY = "main contribution, method and results"
 
 
+def strip_doc_name(query: str, doc: str) -> str:
+    """Drop the filename (and its stem) from a doc-filtered query: the filter already picks the
+    document, and "R6.pdf" in the text only pulls the embedding away from the content asked about.
+
+    Example: ``"What dataset did the paper R6.pdf use?"`` → ``"What dataset did the paper use?"``.
+    """
+    names = sorted({doc, Path(doc).stem} - {""}, key=len, reverse=True)
+    if not names or doc.lower().startswith("doc "):  # "Doc 3" references, not filenames
+        return query
+    pattern = r"(?<!\w)(" + "|".join(re.escape(n) for n in names) + r")(?!\w)"
+    cleaned = re.sub(r"\s{2,}", " ", re.sub(pattern, "", query, flags=re.IGNORECASE)).strip()
+    cleaned = re.sub(r"\s+([?.!,])", r"\1", cleaned)
+    return cleaned if re.search(r"\w{3,}", cleaned) else GENERIC_DOC_QUERY
+
+
 class RagSearchTool(Tool):
     """Searches ingested papers and numbers documents stably within the session.
 
@@ -187,7 +202,7 @@ class RagSearchTool(Tool):
             doc_id = self.resolve_doc_fn(session_doc_ref(self.session, doc))
             if doc_id is None:
                 return unknown_doc_message(doc, self.chat_id)
-            hits = self.doc_retrieve_fn(query, args.k, [doc_id])
+            hits = self.doc_retrieve_fn(strip_doc_name(query, doc), args.k, [doc_id])
         else:
             hits = self.retrieve_fn(query, args.k)
         if not hits:

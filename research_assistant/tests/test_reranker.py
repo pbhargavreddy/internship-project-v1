@@ -50,3 +50,14 @@ def test_rerank_returns_chunks_in_score_order(model: CrossEncoder) -> None:
     assert scores == sorted(scores, reverse=True)
     assert scores == sorted(expected.values(), reverse=True)[:3]
     assert all(expected[c.chunk_id] == pytest.approx(s) for c, s in ranked)
+
+
+def test_rank_fusion_keeps_a_top_vector_hit_the_reranker_buries() -> None:
+    from backend.ingestion import Chunk
+    from backend.retrieval.search import fuse_ranks
+
+    c = [Chunk(chunk_id=f"c{i}", doc_id="d", text=str(i), page=1, section=None) for i in range(10)]
+    vector = c  # c0 is the best vector hit (e.g. R6's "RESIDE dataset" chunk)
+    rerank = c[1:] + c[:1]  # the reranker puts it last
+    top5 = [chunk.chunk_id for chunk, _ in fuse_ranks(vector, rerank, 60)[:5]]
+    assert "c0" in top5 and top5[0] == "c1"  # agreed-on hits still lead
