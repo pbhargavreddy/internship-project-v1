@@ -8,3 +8,4 @@ __pycache__
 pyproject.toml
 *.log
 research_assistant/data/models/reranker.pt
+research_assistant/data/pdfs/
