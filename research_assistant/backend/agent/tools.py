@@ -8,6 +8,7 @@ pydantic ``args_model`` (its JSON arguments) and ``run(args) -> str``.
   • paper_search       → arXiv + Semantic Scholar, optionally ingesting PDFs
   • summarize_papers   → TLDR of retrieved chunks by the fine-tuned model (API LLM fallback)
   • python_interpreter → runs Python in a subprocess (NOT a security sandbox)
+  • compare_papers     → side-by-side table of 2-3 documents (``compare.py``, ENABLE_COMPARE=true)
 
 Tools that call a model record its label in ``model_used`` after each run.
 """
@@ -606,5 +607,11 @@ class PythonInterpreterTool(Tool):
 
 
 def default_tools(session: Session) -> list[Tool]:
-    """The standard tool set bound to ``session``."""
-    return [RagSearchTool(session), PaperSearchTool(session), SummarizePapersTool(session), PythonInterpreterTool()]
+    """The standard tool set bound to ``session`` (plus compare_papers when ``ENABLE_COMPARE=true``)."""
+    tools: list[Tool] = [RagSearchTool(session), PaperSearchTool(session), SummarizePapersTool(session),
+                         PythonInterpreterTool()]
+    if get_settings().enable_compare:
+        from backend.agent.compare import ComparePapersTool  # imports this module
+
+        tools.append(ComparePapersTool(session))
+    return tools

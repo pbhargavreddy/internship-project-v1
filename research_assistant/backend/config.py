@@ -111,6 +111,12 @@ class Settings(BaseSettings):
     agent_raw_log: Path = Path("data/logs/agent_raw.log")  # raw LLM replies that failed to parse
     python_timeout_seconds: float = 15.0
 
+    # ── compare_papers (backend/agent/compare.py) ────────────────────────────
+    enable_compare: bool = False  # ENABLE_COMPARE=true adds the tool and the compare routing guard
+    compare_max_tokens: int = 1200  # JSON reply of the one comparison call
+    compare_context_chars: int = 9000  # retrieved text for all docs, split evenly between them
+    compare_token_budget: int = 6000  # prompt + max_tokens of the comparison call
+
     # ── Evaluation / guardrails (backend/eval/) ──────────────────────────────
     doc_names_file: Path = Path("data/uploads/names.json")  # doc_id -> uploaded filename
     faithfulness_threshold: float = 0.6

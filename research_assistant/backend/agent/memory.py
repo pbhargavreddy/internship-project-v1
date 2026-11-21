@@ -77,6 +77,13 @@ def trim_history(turns: list[Turn], max_messages: int, max_tokens: int) -> list[
     return kept
 
 
+class PendingAction(BaseModel):
+    """A tool call waiting for the user's answer to a clarifying question."""
+
+    tool: str
+    missing: str = Field(..., description="Argument the clarification asked for, e.g. 'docs'")
+
+
 class Session(BaseModel):
     """Everything the agent remembers about one conversation."""
 
@@ -85,6 +92,7 @@ class Session(BaseModel):
     doc_numbers: dict[str, int] = Field(default_factory=dict, description="doc_id -> N")
     doc_titles: dict[str, str] = Field(default_factory=dict, description="doc_id -> title")
     sources: list[Citation] = Field(default_factory=list, description="Chunks shown to the model")
+    pending_action: PendingAction | None = Field(None, description="Set by a tool that asked a clarifying question")
 
     def doc_number(self, doc_id: str) -> int:
         """Return the stable ``N`` for ``doc_id``, assigning the next one if new."""

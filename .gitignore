@@ -4,6 +4,7 @@ internship_venv
 .pytest_cache
 .claude
 .agents
+.vscode
 __pycache__
 pyproject.toml
 *.log

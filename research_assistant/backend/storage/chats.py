@@ -5,7 +5,7 @@ Named chats: one document per chat in the MongoDB collection ``chats``
 (or one JSON file per chat under ``settings.chats_dir`` when MongoDB is
 unreachable)::
 
-    {chat_id, name, created_at, updated_at,
+    {chat_id, name, created_at, updated_at, pending_action: {tool, missing} | null,
      messages: [{role: "user"|"agent", content, ts, model_used, citations,
                  papers, images, steps, ...}]}
 
@@ -26,7 +26,7 @@ from pydantic import AfterValidator, BaseModel, Field, field_validator
 from pymongo import DESCENDING
 from pymongo.collection import Collection
 
-from backend.agent.memory import Citation, Session, SessionStore, Turn
+from backend.agent.memory import Citation, PendingAction, Session, SessionStore, Turn
 from backend.agent.react import AgentNote, AgentResult, AgentStep
 from backend.agent.tools import PaperRef
 from backend.config import get_settings
@@ -118,6 +118,7 @@ class ChatSummary(BaseModel):
 
 class Chat(ChatSummary):
     messages: list[ChatMessage] = Field(default_factory=list)
+    pending_action: PendingAction | None = None  # a tool waiting for the answer to a clarifying question
 
 
 class ChatStore(Protocol):
@@ -127,6 +128,7 @@ class ChatStore(Protocol):
     def append(self, chat_id: str, msg: ChatMessage) -> bool: ...
     def rename(self, chat_id: str, name: str) -> ChatSummary | None: ...
     def delete(self, chat_id: str) -> bool: ...
+    def set_pending(self, chat_id: str, action: PendingAction | None) -> bool: ...
 
 
 class MongoChatStore:
@@ -170,6 +172,10 @@ class MongoChatStore:
 
     def delete(self, chat_id: str) -> bool:
         return self.col.delete_one({"chat_id": chat_id}).deleted_count == 1
+
+    def set_pending(self, chat_id: str, action: PendingAction | None) -> bool:
+        value = action.model_dump() if action is not None else None
+        return self.col.update_one({"chat_id": chat_id}, {"$set": {"pending_action": value}}).matched_count == 1
 
 
 class LocalChatStore:
@@ -243,6 +249,15 @@ class LocalChatStore:
             existed = path.exists()
             path.unlink(missing_ok=True)
         return existed
+
+    def set_pending(self, chat_id: str, action: PendingAction | None) -> bool:
+        with self._lock:
+            chat = self.get(chat_id)
+            if chat is None:
+                return False
+            chat.pending_action = action
+            self._write(chat)
+        return True
 
 
 _store: ChatStore | None = None
@@ -331,10 +346,31 @@ def history_turns(chat: Chat, n: int) -> list[Turn]:
     return turns[-n:] if n > 0 else []
 
 
+def get_pending_action(chat_id: str) -> PendingAction | None:
+    """The chat's pending action. Raises the store's error (e.g. MongoDB down) to the caller."""
+    chat = get_chat_store().get(chat_id)
+    return chat.pending_action if chat is not None else None
+
+
+def set_pending_action(chat_id: str, action: PendingAction | None) -> bool:
+    """Save (or clear, with ``None``) the chat's pending action; ``False`` if it failed or the chat is unknown.
+
+    Never raises: callers keep a local copy (the session file) as the fallback.
+    """
+    try:
+        return get_chat_store().set_pending(chat_id, action)
+    except Exception as exc:  # noqa: BLE001 — MongoDB offline mid-run: the session file keeps it
+        log.warning("Could not save pending_action of chat %s (%s); kept in the local session file",
+                    chat_id, type(exc).__name__)
+        return False
+
+
 class ChatHistorySessionStore(SessionStore):
     """Session store whose prompt history comes from a stored chat, not the session file.
 
     Doc numbering and citable sources still persist in ``<sessions_dir>/<chat_id>.json``.
+    ``pending_action`` is read from and written to the chat (MongoDB or local JSON); the
+    session file's copy is used when the chat store can't be reached.
 
     Args:
         turns: History to give the agent (e.g. :func:`history_turns`).
@@ -348,4 +384,15 @@ class ChatHistorySessionStore(SessionStore):
     def load(self, session_id: str) -> Session:
         session = super().load(session_id)
         session.turns = list(self._turns)
+        try:
+            chat = get_chat_store().get(session_id)
+            if chat is not None:
+                session.pending_action = chat.pending_action
+        except Exception as exc:  # noqa: BLE001 — store unreachable: keep the session file's copy
+            log.warning("Could not read pending_action of chat %s (%s); using the local copy",
+                        session_id, type(exc).__name__)
         return session
+
+    def save(self, session: Session) -> None:
+        super().save(session)  # local copy first
+        set_pending_action(session.session_id, session.pending_action)

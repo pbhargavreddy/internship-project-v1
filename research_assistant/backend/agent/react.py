@@ -31,6 +31,7 @@ from typing import Any
 import openai
 from pydantic import BaseModel, Field, ValidationError
 
+from backend.agent.doc_resolver import chat_documents, resolve_docs
 from backend.agent.memory import Citation, Session, SessionStore, Turn, count_tokens, trim_history
 from backend.agent.tools import PaperRef, Tool, default_tools, truncate
 from backend.config import get_settings
@@ -77,9 +78,15 @@ OLD_OBS_CHARS = 600  # older tool results are cut to this when a request is over
 REWRITE_PROMPT = (
     "Rewrite the user's latest message as one standalone question that can be understood without the "
     "conversation. Replace references such as 'it', 'that paper' or 'the first one' with the exact paper "
-    "title or filename from the conversation. If the message is already standalone, return it unchanged. "
+    "title or filename from the conversation. If the last assistant message asked a clarifying question, "
+    "the latest message answers it: merge the answer into the user's original request. Keep the user's "
+    "original task verb (compare, summarize, explain, ...). Spell out document filenames in full, "
+    "e.g. journal1.pdf. If the message is already standalone, return it unchanged. "
     "Reply with the question only."
 )
+COMPARE_TOOL = "compare_papers"
+# Routing guard: a (rewritten) question like this goes straight to compare_papers when it is enabled.
+COMPARE_RE = re.compile(r"\b(compar\w*|vs\.?|versus|differences?|differ|contrast\w*)(?!\w)", re.I)
 
 SYSTEM_TEMPLATE = """You are ScholarPulse, a research assistant that reasons step by step and calls tools.
 
@@ -150,7 +157,7 @@ class AgentNote(BaseModel):
     """A non-tool event in a turn, for the UI's agent log (re-asks, final thought, routing)."""
 
     step: int = Field(..., description="Shown before this step number (len(steps) + 1 = after the last step)")
-    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone | rate_limit | unmarked_final | summary_final")
+    kind: str = Field(..., description="reask | final_thought | step_limit | routing | degraded | standalone | rate_limit | unmarked_final | summary_final | pending | compare_guard")
     text: str
 
 
@@ -600,8 +607,13 @@ class ReActAgent:
         if not history:
             return message
         convo = "\n\n".join(f"User: {t.user}\nAssistant: {truncate(t.assistant, REWRITE_ANSWER_CHARS)}" for t in history)
+        names = list(chat_documents(session.session_id))[:MAX_LISTED_DOCS]
         prompt = [{"role": "system", "content": REWRITE_PROMPT},
-                  {"role": "user", "content": f"Conversation:\n{convo}\n\nLatest message: {message}"}]
+                  {"role": "user", "content": (
+                      f"Conversation:\n{convo}\n\n"
+                      f"Last assistant message: {truncate(history[-1].assistant, REWRITE_ANSWER_CHARS)}\n\n"
+                      f"Documents in this chat: {', '.join(names) or 'none'}\n\n"
+                      f"Latest message: {message}")}]
         try:
             reply = self.llm.generate(prompt, max_tokens=self.rewrite_max_tokens, temperature=0.0)
         except Exception as exc:  # noqa: BLE001 — retrieval still works with the raw message
@@ -654,8 +666,16 @@ class ReActAgent:
         needed = required_tools(message, load_doc_names(chat_id=session.session_id).values())
         accept = lambda reply: accept_unmarked(reply, needed, tools_used)  # noqa: E731 — sees tools_used grow
         rag_rewritten = False
+        final_tool: str | None = None  # a tool whose output is the answer (compare_papers)
 
-        for _ in range(self.max_steps):
+        direct = self._direct_call(session, tools, message, notes)
+        if direct is not None:
+            call, standalone = direct
+            answer = self._run_final_tool(tools, call, steps)
+            final_tool = call.tool
+            tools_used.add(call.tool)
+
+        for _ in range(self.max_steps if answer is None else 0):
             step_start = time.perf_counter()
             _reply, parsed = self._step_reply(messages, session_id, len(steps) + 1, notes, len(steps) + 1, fallback, accept)
             self._note_rate_limit_waits(notes, len(steps) + 1)
@@ -691,6 +711,11 @@ class ReActAgent:
             steps.append(AgentStep(thought=parsed.thought, tool=tool, args=args,
                                    observation=truncate(observation, STEP_OBS_CHARS), images=images,
                                    total_ms=total_ms, model_used=model_used))
+            final_out = getattr(tools.get(tool), "final_output", None) if getattr(tools.get(tool), "final", False) else None
+            if final_out:
+                # A final tool's output is the answer itself: no 4,000-char cut, no final-answer call.
+                answer, final_tool = final_out, tool
+                break
             messages.append({"role": "user", "content": OBS_PREFIX + truncate(observation, self.obs_max_chars)})
             summary = getattr(tools.get(SUMMARY_TOOL), "last_summary", None) if tool == SUMMARY_TOOL else None
             if summary and not tools_used & {RAG_TOOL, PAPER_TOOL}:
@@ -717,7 +742,10 @@ class ReActAgent:
         retrieved = _unique_chunks(rc for t in tools.values() for rc in getattr(t, "retrieved", []))
         summary = getattr(tools.get(SUMMARY_TOOL), "last_summary", None)
         pdf_turn = bool(tools_used & PDF_TOOLS) and PAPER_TOOL not in tools_used
-        if pdf_turn and tools_used & PDF_TOOLS == {SUMMARY_TOOL} and summary:
+        if final_tool is not None:
+            # Compare turns are answered by the tool's own Groq call, never the fine-tuned model.
+            routed = RoutedAnswer(answer=answer, model_used=tools[final_tool].model_used or api_llm_label())
+        elif pdf_turn and tools_used & PDF_TOOLS == {SUMMARY_TOOL} and summary:
             # A pure summary turn: show the section-by-section summary itself, not a rewrite of it.
             routed = RoutedAnswer(answer=summary, model_used=tools[SUMMARY_TOOL].model_used or api_llm_label())
         else:
@@ -751,6 +779,50 @@ class ReActAgent:
             agent_model=last.model.short_name if last is not None else None,
             agent_fallback=bool(last and last.fallback),
         )
+
+    def _direct_call(
+        self, session: Session, tools: dict[str, Tool], message: str, notes: list[AgentNote],
+    ) -> tuple[ToolCall, str | None] | None:
+        """A tool call that skips the agent's routing, or ``None`` for a normal turn.
+
+        1. A pending clarification (``session.pending_action``): if the message names 2+ of the
+           chat's documents, the pending tool runs with them. The pending action is cleared either way.
+        2. Routing guard: with compare_papers enabled and 2+ documents in the chat, a (rewritten)
+           question that asks to compare / contrast goes straight to compare_papers.
+
+        Returns:
+            The call and the standalone question computed for it (``None`` if none was).
+        """
+        pending, session.pending_action = session.pending_action, None
+        if pending is not None:
+            names = resolve_docs(message, session.session_id) if pending.tool in tools else []
+            if len(names) >= 2:
+                notes.append(AgentNote(step=1, kind="pending", text=truncate(
+                    f"Answer to the clarifying question: running {pending.tool} with {', '.join(names)}.", NOTE_CHARS)))
+                return ToolCall(tool=pending.tool, args={pending.missing: names}), None
+            notes.append(AgentNote(step=1, kind="pending",
+                                   text=f"Pending {pending.tool} cleared: the message names fewer than two documents."))
+        if COMPARE_TOOL not in tools or len(chat_documents(session.session_id)) < 2:
+            return None
+        standalone = self._standalone_question(session, message)
+        if standalone != message:
+            notes.append(AgentNote(step=1, kind="standalone", text=truncate(f"Standalone question: {standalone}", NOTE_CHARS)))
+        if not COMPARE_RE.search(standalone):
+            return None
+        names = resolve_docs(standalone, session.session_id) or resolve_docs(message, session.session_id)
+        notes.append(AgentNote(step=1, kind="compare_guard",
+                               text=truncate(f"Comparison request: forced compare_papers ({', '.join(names) or 'no names'}).", NOTE_CHARS)))
+        return ToolCall(tool=COMPARE_TOOL, args={"docs": names} if names else {}), standalone
+
+    def _run_final_tool(self, tools: dict[str, Tool], call: ToolCall, steps: list[AgentStep]) -> str:
+        """Run ``call`` outside the loop and return its output as the answer (recorded as one step)."""
+        start = time.perf_counter()
+        observation = self._run_tool(tools, call)
+        steps.append(AgentStep(thought="Direct call (routing guard / clarification answer)", tool=call.tool,
+                               args=call.args, observation=truncate(observation, STEP_OBS_CHARS),
+                               total_ms=round((time.perf_counter() - start) * 1000, 1),
+                               model_used=getattr(tools.get(call.tool), "model_used", None)))
+        return getattr(tools.get(call.tool), "final_output", None) or observation
 
     def _degraded(self, session_id: str, message: str, exc: AllModelsFailedError) -> AgentResult:
         """Answer without the agent LLM: direct paper search, PDF question via the fine-tuned

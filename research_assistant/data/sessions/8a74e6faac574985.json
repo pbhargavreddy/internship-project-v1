@@ -1,0 +1,172 @@
+{
+  "session_id": "8a74e6faac574985",
+  "turns": [
+    {
+      "user": "Hello agent ",
+      "assistant": "Hello! How can I assist you with your research today?"
+    },
+    {
+      "user": "summerize r1",
+      "assistant": "**Summary of R1.pdf** (Doc 1)\n\n### Objective\nThe paper proposes a new attention‑based convolutional architecture whose goal is to bring the expressive power of multi‑head attention to lightweight CNNs.  Specifically, it introduces a Multi‑Head Large Kernel Attention (MLKA) module that embeds several attention heads into a large‑kernel convolutional block and uses channel‑shuffle operations to enable interaction among the heads, thereby improving spatial feature representation while keeping computational cost low.  Building on this module, the authors design MLKD‑Net, a compact model optimized for fast inference and deployment on devices with limited resources【Doc 1, Sec 1. Introduction】【Doc 1, Sec 2. Related Work】. [Doc 1, Sec n/a] [Doc 1, Sec 1. Introduction] [Doc 1, Sec 2. Related Work]\n\n### Method\nThe paper proposes **MLKD‑Net**, a lightweight U‑Net‑style dehazing model that replaces the standard encoder‑decoder blocks with multiple **Multi‑Head Large Kernel Dehaze (MLKD) blocks**. Each MLKD block contains a **Multi‑Head Large Kernel Attention (MLKA) module** that splits the feature map into several heads, processes each head with a large‑kernel (DWConv + dilated DWConv) block, and then fuses the results via a channel‑shuffle operation, while a **Channel Attention (CA) module** adaptively re‑weights channel importance to emphasize haze‑relevant cues【Doc 1, Sec 3. Method】. This design combines the expressive power of Vision‑Transformer‑style attention with the efficiency of CNNs, enabling effective spatial modeling and selective feature enhancement for single‑image dehazing【Doc 1, Sec 3. Method】. [Doc 1, Sec 3. Method]\n\n### Results\nThe experiments show that the lightweight MLKD‑Net (both Tiny and Small variants) achieves real‑time single‑image dehazing on an embedded NVIDIA Jetson Orin Nano, running at 13–18 fps with only a modest increase in FLOPs and maintaining almost unchanged PSNR/SSIM after INT8 quantization【Doc 1, Sec FLOPs】.  Ablation studies confirm that the Large‑Kernel block (5×5 depth‑wise + 7×7 dilated depth‑wise with dilation = 3) and the two‑head attention design provide the best trade‑off between accuracy and efficiency, while the channel‑splitting MLKA mechanism offers a competitive, scalable alternative for lightweight low‑level vision tasks【Doc 1, Sec 4.1】.  Overall, the paper demonstrates that MLKD‑Net’s design yields high dehazing performance with minimal parameter growth and robust quantization, making it well‑suited for real‑time deployment on resource‑constrained platforms【Doc 1, Sec 6. Discussion】. [Doc 1, Sec 4. Experimental Results] [Doc 1, Sec FLOPs] [Doc 1, Sec 6. Discussion]\n\n### Conclusion\nThe paper concludes that MLKD‑Net provides a lightweight yet high‑performing solution for single‑image dehazing, achieving competitive visual quality with only a 1.9 % PSNR drop relative to state‑of‑the‑art Transformer models while cutting parameters by more than 90 % and delivering real‑time inference (≈55 ms per image) on an embedded Jetson Orin Nano platform【Doc 1, Sec 7】. The authors note that the current design does not explicitly model haze thickness, suggesting future work on dynamic, scene‑adaptive haze estimation to further improve accuracy in complex real‑world conditions【Doc 1, Sec 7】. [Doc 1, Sec 7. Conclusions and Future Work]"
+    },
+    {
+      "user": "Hello model. Find me some papers on this topic ",
+      "assistant": "**Suggested papers (deep learning — general overview & applications)**  \n\n1. **Learn to Accumulate Evidence from All Training Samples: Theory and Practice** (2023) – Deep Pandey, Qi Yu.  \n   *Evidential deep learning* framework for uncertainty‑aware neural networks.  \n   📄 [PDF](https://arxiv.org/pdf/2306.11113v2)  \n\n2. **PyTorch: An Imperative Style, High‑Performance Deep Learning Library** (2019) – A. Paszke et al.  \n   Introduces the widely‑used PyTorch library, balancing usability and speed.  \n   📄 [PDF](http://arxiv.org/pdf/1912.01703)  \n\n3. **The Modern Mathematics of Deep Learning** (2021) – Julius Berner, Philipp Grohs, Gitta Kutyniok et al.  \n   Survey of recent mathematical analysis of over‑parameterized neural networks.  \n   📄 [PDF](https://arxiv.org/pdf/2105.04026v2)  \n\n4. **nnU‑Net: a self‑configuring method for deep learning‑based biomedical image segmentation** (2020) – Fabian Isensee, Paul Jaeger, Simon Kohl et al.  \n   State‑of‑the‑art framework that automatically adapts U‑Net architectures to new datasets.  \n   📄 [PDF](https://arxiv.org/pdf/1904.08128)  \n\n5. **Deep Learning and Computational Physics (Lecture Notes)** (2023) – Deep Ray, Orazio Pinti, Assad A. Oberai.  \n   Introductory notes linking deep learning techniques to computational physics problems.  \n   📄 [PDF](https://arxiv.org/pdf/2301.00942v1)  \n\nLet me know if you need more specific papers or additional details!"
+    },
+    {
+      "user": "Can you summerize R2",
+      "assistant": "**Summary of R2.pdf** (Doc 2)\n\n### Objective\nWe propose a novel large-kernel convolution-based dehazing operator that combines global context modeling, structure-aware support correction, and frequency-aware detail recovery. [Doc 2, Sec 2.5] We first introduce a deformable large-kernel convolution that captures global context while adapting to object geometry and local structures. [Doc 2, Sec 2.5] We then propose a frequency-aware modulation that enhances high-frequency details while suppressing low-frequency artifacts. [Doc 2, Sec 2.5] Finally, we integrate these components into a compact operator stack that achieves state-of-the-art performance on both single-image and video dehazing. [Doc 2, Sec 2.5]\n\n### Method\nWe propose a novel architecture for single-image dehazing based on a hierarchical encoder–bottleneck–decoder structure. [Doc 2, Sec 3.1] The network learns to adaptively fuse multiple feature representations to produce a final restoration result. [Doc 2, Sec 3.1] We introduce three new components to achieve this goal: a coarse-to-fine sampling module, a frequency-sensitive modulation module, and a spatial confidence module. [Doc 2, Sec 3.1] These modules are designed to address the key challenges of haze removal, including spatially varying visibility, local structural alignment, and high-frequency detail recovery. [Doc 2, Sec 3.1] Experiments show that our approach outperforms state-of-the-art methods on both quantitative and qualitative metrics. [Doc 2, Sec 3.1]\n\n### Dataset/Experiments\nWe propose a novel architecture for haze removal based on a combination of convolutional neural networks and diffusion models. [Doc 2, Sec 1] Our method is able to achieve state-of-the-art performance on both synthetic and real-world benchmarks. [Doc 2, Sec 1] We also provide a detailed ablation study and complexity analysis to understand the role of different components in our model. [Doc 2, Sec 1]\n\n### Results\nWe propose a novel adaptive dehazing network (ADPCNet) that combines context-aware spectral modeling, structure-aware sampling support adjustment, frequency-sensitive detail compensation, and adaptive evidence fusion. [Doc 2, Sec 6. Discussion] We evaluate the proposed method on paired benchmarks and real-world datasets, and compare it against recent strong baselines. [Doc 2, Sec 6. Discussion] The results demonstrate that ADPCNet achieves a favorable quality-efficiency trade-off under the unified protocol. [Doc 2, Sec 5. Results]\n\n### Conclusion\nThis paper presents ADPCNet, a compact dehazing-oriented operator stack that separates three coupled subproblems of haze removal: broad context estimation, structure-aligned aggregation, and detail compensation. [Doc 2, Sec 7. Conclusions] Instead of relying on dense large kernels or heavy full-attention backbones, ADPCNet organizes peripheral large-kernel context modeling, deformable sampling, frequency-guided modulation, and dynamic multi-branch fusion into a unified encoder-decoder framework. [Doc 2, Sec 7. Conclusions] This design allows the network to model large-scale haze distribution, adjust sampling support around residual structures, and enhance recoverable high-frequency details within a restrained computational budget. [Doc 2, Sec 7. Conclusions]"
+    }
+  ],
+  "doc_numbers": {
+    "f6a8c3aa9bb2c154": 1,
+    "a1d7d29a16fd0cb6": 2
+  },
+  "doc_titles": {},
+  "sources": [
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 1,
+      "section": null
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 2,
+      "section": "1. Introduction"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 3,
+      "section": "2. Related Work"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 4,
+      "section": "3. Method"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 5,
+      "section": "3. Method"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 6,
+      "section": "3. Method"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 6,
+      "section": "4. Experimental Results"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 10,
+      "section": "FLOPs"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 13,
+      "section": "6. Discussion"
+    },
+    {
+      "doc": 1,
+      "title": "R1.pdf",
+      "page": 14,
+      "section": "7. Conclusions and Future Work"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 1,
+      "section": null
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 2,
+      "section": "1. Introduction"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 4,
+      "section": "2. Related Work"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 4,
+      "section": "3. Materials and Methods"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 7,
+      "section": "F mac ( p 0 ) = ∑"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 10,
+      "section": "F mac ( p 0 ) = ∑"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 10,
+      "section": "4. Experimental Setup"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 11,
+      "section": "4. Experimental Setup"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 11,
+      "section": "5. Results"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 14,
+      "section": "(ms)"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 16,
+      "section": "6. Discussion"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 17,
+      "section": "6.4. Limitations"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 18,
+      "section": "7. Conclusions"
+    },
+    {
+      "doc": 2,
+      "title": "R2.pdf",
+      "page": 18,
+      "section": "Abbreviations"
+    }
+  ]
+}

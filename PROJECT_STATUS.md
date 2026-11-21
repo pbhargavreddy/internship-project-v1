@@ -4,7 +4,7 @@ Checked 2026-11-20. Paths are relative to `research_assistant/`.
 
 The repo doesn't number steps 0–8 anywhere (`Prompts/sprints.txt` lists Sprints 1–6). The numbering below follows the order in CLAUDE.md, with steps 7 and 8 being eval/guardrails and the UI.
 
-**Tests:** `pytest -q` → **116 passed, 1 skipped, 0 failed** (11 s, offline; the skip is a `@pytest.mark.live` test). Rechecked 2026-11-21.
+**Tests:** `pytest -q` → **135 passed, 1 skipped, 0 failed** (12 s, offline; the skip is a `@pytest.mark.live` test). Rechecked 2026-11-21.
 
 | Step | Area | Status | Evidence |
 |---|---|---|---|
@@ -30,3 +30,10 @@ The repo doesn't number steps 0–8 anywhere (`Prompts/sprints.txt` lists Sprint
   - **Standalone rewrite:** before the first `rag_search` / `summarize_papers` of a turn that has history, one short LLM call through the chain rewrites the follow-up into a standalone question (shown as a "Standalone question" note). It is skipped when there's no history and falls back to the raw message on error. The first `rag_search` of that turn uses the standalone question as its query.
   - **Fine-tuned model:** it still gets only the standalone question plus the retrieved chunks, never the history.
   - **Isolation:** history comes only from this chat, and retrieval is filtered by `chat_id`.
+- **Step 6, `compare_papers` + clarification follow-ups (2026-11-21, behind `ENABLE_COMPARE=true`, default off):**
+  - **`backend/agent/doc_resolver.py::resolve_docs(text, chat_id)`** returns the chat's filenames named in the text, ignoring case, `.pdf`, spaces, `-` and `_` ("Journal 1" = `journal1.pdf`; "journal 10" doesn't match `journal1.pdf`). "doc 2" / "paper 2" / "file 2" mean the chat's 2nd document in `names.json` registry order (≈ upload order).
+  - **`backend/agent/compare.py::ComparePapersTool`** takes `docs` (2–3 names, optional) and `aspects` (default: objective, method, dataset, results/metrics, limitations). With no names and exactly 2 docs in the chat, it uses both. With more, it lists the filenames and sets `pending_action = {"tool": "compare_papers", "missing": "docs"}`. Per doc and aspect it retrieves the top 2 chunks from that doc only (vector + reranker fusion, filename stripped), at most 400 chars each, and `COMPARE_CONTEXT_CHARS` is split evenly between the docs. It then makes **one** chain (Groq) call for JSON `{rows, summaries, differences}`, validated with pydantic and retried once on bad JSON, and returns a clean error message after that. Python builds the Markdown table, the per-paper summaries and the "Key differences" list. It logs prompt tokens + `max_tokens` and shrinks the passages until they fit `COMPARE_TOKEN_BUDGET=6000`.
+  - **Final tool:** the output is the answer as-is. It skips the 4,000-char observation cut, the agent's final-answer call and the fine-tuned model.
+  - **Pending action:** stored as `Session.pending_action`, which is mirrored to `chats.pending_action` in MongoDB (or the local chat JSON) by `ChatHistorySessionStore`. The session file is the fallback if the chat store fails. On the next turn, if the message names 2+ docs, the pending tool runs directly (no rewrite, no ReAct routing). The pending action is cleared either way.
+  - **Rewrite prompt** now gets the last assistant message and the chat's filenames, and is told to keep the original task verb and spell filenames out in full. **Routing guard:** with the tool enabled and 2+ docs, the (rewritten) question is checked for compare / vs / versus / difference / contrast, and a match forces `compare_papers`. When enabled, this adds the rewrite call to every turn that has history in a multi-doc chat.
+  - Tests: `tests/test_compare.py` (6). Not yet checked against live Groq or in the UI.

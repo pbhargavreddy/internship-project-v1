@@ -15,3 +15,6 @@ cd ~/Documents/internship-project-v1/research_assistant
 # terminal 2
 cd ~/Documents/internship-project-v1/research_assistant
 ../internship_venv/bin/python -m streamlit run frontend/app.py
+
+
+ngrok http 8501
