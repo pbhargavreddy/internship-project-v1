@@ -193,6 +193,7 @@ class RagSearchTool(Tool):
         self.doc_retrieve_fn: DocRetrieveFn = doc_retrieve_fn or _chat_retrieve(chat_id)
         self.resolve_doc_fn: ResolveDocFn = resolve_doc_fn or (lambda ref: _store_resolve(ref, chat_id))
         self.retrieved: list[tuple[int, Chunk]] = []  # (Doc N, chunk) seen this turn
+        self.max_chars: int = get_settings().rag_obs_max_chars
 
     def run(self, args: RagSearchArgs) -> str:
         doc, query = args.doc, args.query
@@ -212,16 +213,21 @@ class RagSearchTool(Tool):
 
     def format_hits(self, hits: list[tuple[Chunk, float]]) -> str:
         """Number docs, record citable sources and render hits as ``[Doc N, Sec S, p.P] text``."""
-        lines = []
+        lines: list[str] = []
+        used = 0
         for chunk, _score in hits:
             n = self.session.doc_number(chunk.doc_id)
             section = chunk.section or "n/a"
             self.session.add_source(
                 Citation(doc=n, title=self.session.title_for(chunk.doc_id), page=chunk.page, section=chunk.section)
             )
-            self.retrieved.append((n, chunk))
+            self.retrieved.append((n, chunk))  # all hits stay available to the fine-tuned model
             # Strip injected instructions hidden in documents before the LLM sees them.
-            lines.append(f"[Doc {n}, Sec {section}, p.{chunk.page}] {sanitize_text(chunk.text).strip()}")
+            line = f"[Doc {n}, Sec {section}, p.{chunk.page}] {sanitize_text(chunk.text).strip()}"
+            if lines and used + len(line) > self.max_chars:
+                continue  # the model sees the top chunks only, up to rag_obs_max_chars in total
+            lines.append(line if used + len(line) <= self.max_chars else truncate(line, self.max_chars))
+            used += len(lines[-1])
         return "\n\n".join(lines)
 
 

@@ -99,6 +99,13 @@ class Settings(BaseSettings):
     agent_max_steps: int = 8
     agent_history_messages: int = 10  # past chat messages (user + assistant) sent to the agent
     agent_history_max_tokens: int = 3000  # history token cap; the oldest turns are dropped first
+    # Token budget per agent request (Groq on_demand: 8000 TPM / 7000 input TPM per model, and the
+    # request's prompt + max_tokens must fit in one minute's quota or Groq answers 413).
+    agent_step_max_tokens: int = 800  # max_tokens of every ReAct reply, including the final answer
+    agent_rewrite_max_tokens: int = 100  # standalone-question rewrite
+    agent_obs_max_chars: int = 4000  # any tool result sent back to the model
+    rag_obs_max_chars: int = 3000  # rag_search: top chunks only, up to this many chars in total
+    agent_request_token_budget: int = 6000  # prompt tokens per request; history trimmed first, then old tool results
     agent_output_dir: Path = Path("data/plots")  # python_interpreter PNGs, served at /plots
     agent_raw_log: Path = Path("data/logs/agent_raw.log")  # raw LLM replies that failed to parse
     python_timeout_seconds: float = 15.0

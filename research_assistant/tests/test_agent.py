@@ -388,3 +388,27 @@ def test_doc_filtered_query_drops_the_filename() -> None:
     assert strip_doc_name("what does R6 say about FPGA latency", "R6.pdf") == "what does say about FPGA latency"
     assert strip_doc_name("R6.pdf", "R6.pdf") == GENERIC_DOC_QUERY
     assert strip_doc_name("dataset of doc 3", "Doc 3") == "dataset of doc 3"
+
+
+def test_request_over_budget_trims_history_first_then_old_tool_results() -> None:
+    from backend.agent.memory import count_tokens
+    from backend.agent.react import CURRENT_PREFIX, OBS_PREFIX, fit_to_budget
+
+    big = "word " * 1000  # ~1000 tokens
+    msgs = [{"role": "system", "content": "sys"},
+            {"role": "user", "content": "old q"}, {"role": "assistant", "content": big},
+            {"role": "user", "content": "q2"}, {"role": "assistant", "content": big},
+            {"role": "user", "content": CURRENT_PREFIX + "find papers"},
+            {"role": "assistant", "content": "Thought: search\nAction: {}"},
+            {"role": "user", "content": OBS_PREFIX + big},
+            {"role": "assistant", "content": "Thought: again\nAction: {}"},
+            {"role": "user", "content": OBS_PREFIX + "latest " * 300}]
+    total = lambda ms: sum(count_tokens(m["content"]) for m in ms)  # noqa: E731
+
+    one_pair = fit_to_budget(msgs, total(msgs) - 500)
+    assert [m["content"] for m in one_pair[1:3]] == ["q2", big]  # only the oldest history pair dropped
+
+    tight = fit_to_budget(msgs, 900)
+    assert tight[1]["content"].startswith(CURRENT_PREFIX)  # all history gone
+    assert len(tight[3]["content"]) < 700 and tight[-1]["content"].startswith(OBS_PREFIX + "latest")
+    assert msgs[2]["content"] == big  # input not modified

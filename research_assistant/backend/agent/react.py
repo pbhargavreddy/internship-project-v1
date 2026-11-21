@@ -31,7 +31,7 @@ from typing import Any
 import openai
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.agent.memory import Citation, Session, SessionStore, Turn, trim_history
+from backend.agent.memory import Citation, Session, SessionStore, Turn, count_tokens, trim_history
 from backend.agent.tools import PaperRef, Tool, default_tools, truncate
 from backend.config import get_settings
 from backend.eval.faithfulness import FaithfulnessResult
@@ -45,9 +45,7 @@ from backend.llm.router import (
 
 log = logging.getLogger(__name__)
 
-PROMPT_OBS_CHARS = 6000  # observation size sent back to the LLM
 STEP_OBS_CHARS = 500  # observation size kept in the returned steps
-MAX_TOKENS = 2048
 STOP = ["Observation:"]  # the model must not write the tool's Observation itself
 PDF_TOOLS = {"rag_search", "summarize_papers"}
 PAPER_TOOL = "paper_search"
@@ -67,8 +65,9 @@ _PAPER_PREFIX_RE = re.compile(
 AGENT_UNAVAILABLE = ("The agent model is temporarily unavailable (rate limit). Paper search and questions "
                      "about your uploaded PDFs still work.")
 DEGRADED_LABEL = "degraded mode"
-REWRITE_MAX_TOKENS = 400  # gpt-oss spends some of it on reasoning
 REWRITE_ANSWER_CHARS = 1500  # per past answer, in the rewrite prompt
+OBS_PREFIX = "Observation: "
+OLD_OBS_CHARS = 600  # older tool results are cut to this when a request is over the token budget
 REWRITE_PROMPT = (
     "Rewrite the user's latest message as one standalone question that can be understood without the "
     "conversation. Replace references such as 'it', 'that paper' or 'the first one' with the exact paper "
@@ -381,6 +380,47 @@ def fallback_answer(tools: dict[str, Tool], steps: list[AgentStep]) -> str:
     return "The model could not produce an answer for this request. Please try again."
 
 
+def fit_to_budget(messages: list[dict[str, str]], budget: int) -> list[dict[str, str]]:
+    """A copy of ``messages`` whose prompt fits in ``budget`` tokens.
+
+    Order of cuts: (1) past-chat history pairs, oldest first; (2) older tool results, cut to
+    ``OLD_OBS_CHARS``; (3) the latest tool result, halved until it fits. The system prompt, the
+    current user message and the model's own replies are never removed.
+
+    Args:
+        messages: System prompt, history pairs, the ``CURRENT user message``, then this turn's steps.
+        budget: Prompt-token budget (tiktoken ``cl100k_base`` estimate).
+
+    Returns:
+        The trimmed copy (``messages`` itself is not modified).
+    """
+    msgs = [dict(m) for m in messages]
+    total = sum(count_tokens(m["content"]) for m in msgs)
+    if total <= budget:
+        return msgs
+    before = total
+    cur = next((i for i, m in enumerate(msgs) if m["content"].startswith(CURRENT_PREFIX)), 1)
+    while total > budget and cur >= 3:  # history = msgs[1:cur], user/assistant pairs
+        total -= count_tokens(msgs[1]["content"]) + count_tokens(msgs[2]["content"])
+        del msgs[1:3]
+        cur -= 2
+    obs = [i for i in range(cur + 1, len(msgs)) if msgs[i]["content"].startswith(OBS_PREFIX)]
+    for i in obs[:-1]:
+        if total <= budget:
+            break
+        old = msgs[i]["content"]
+        msgs[i]["content"] = truncate(old, OLD_OBS_CHARS)
+        total += count_tokens(msgs[i]["content"]) - count_tokens(old)
+    if obs and total > budget:
+        i = obs[-1]
+        while total > budget and len(msgs[i]["content"]) > OLD_OBS_CHARS:
+            old = msgs[i]["content"]
+            msgs[i]["content"] = truncate(old, len(old) // 2)
+            total += count_tokens(msgs[i]["content"]) - count_tokens(old)
+    log.info("Request trimmed to the token budget: %d -> %d prompt tokens (budget %d)", before, total, budget)
+    return msgs
+
+
 class ReActAgent:
     """Runs one ReAct conversation turn per :meth:`chat` call.
 
@@ -418,6 +458,10 @@ class ReActAgent:
             history_max_tokens if history_max_tokens is not None else settings.agent_history_max_tokens)
         self.router: FinetunedRouter = router or get_router()
         self.raw_log_path: Path = Path(raw_log_path or settings.agent_raw_log)
+        self.step_max_tokens: int = settings.agent_step_max_tokens
+        self.rewrite_max_tokens: int = settings.agent_rewrite_max_tokens
+        self.obs_max_chars: int = settings.agent_obs_max_chars
+        self.request_token_budget: int = settings.agent_request_token_budget
         # Test doubles may not accept ``stop``; only pass it to LLMs that do.
         self._gen_kwargs: dict[str, Any] = (
             {"stop": STOP} if "stop" in inspect.signature(self.llm.generate).parameters else {}
@@ -425,8 +469,8 @@ class ReActAgent:
 
     def _generate(self, messages: list[dict[str, str]], fallback: Callable[[], str] | None = None) -> str:
         return groq_final_answer(
-            self.llm, messages, fallback or (lambda: fallback_answer({}, [])),
-            max_tokens=MAX_TOKENS, temperature=0.0, **self._gen_kwargs,
+            self.llm, fit_to_budget(messages, self.request_token_budget), fallback or (lambda: fallback_answer({}, [])),
+            max_tokens=self.step_max_tokens, temperature=0.0, **self._gen_kwargs,
         )
 
     def _step_reply(
@@ -491,7 +535,7 @@ class ReActAgent:
         prompt = [{"role": "system", "content": REWRITE_PROMPT},
                   {"role": "user", "content": f"Conversation:\n{convo}\n\nLatest message: {message}"}]
         try:
-            reply = self.llm.generate(prompt, max_tokens=REWRITE_MAX_TOKENS, temperature=0.0)
+            reply = self.llm.generate(prompt, max_tokens=self.rewrite_max_tokens, temperature=0.0)
         except Exception as exc:  # noqa: BLE001 — retrieval still works with the raw message
             log.warning("Standalone-question rewrite failed; using the raw message: %s", exc)
             return message
@@ -567,7 +611,7 @@ class ReActAgent:
                 if tool in tools:
                     tools_used.add(tool)
                 if tool == PYTHON_TOOL:
-                    python_outputs.append(truncate(observation, PROMPT_OBS_CHARS))
+                    python_outputs.append(truncate(observation, self.obs_max_chars))
             else:
                 observation, tool, args = f"Error: {parsed.error}", None, {}
             total_ms = round((time.perf_counter() - step_start) * 1000, 1)
@@ -576,7 +620,7 @@ class ReActAgent:
             steps.append(AgentStep(thought=parsed.thought, tool=tool, args=args,
                                    observation=truncate(observation, STEP_OBS_CHARS), images=images,
                                    total_ms=total_ms, model_used=model_used))
-            messages.append({"role": "user", "content": f"Observation: {truncate(observation, PROMPT_OBS_CHARS)}"})
+            messages.append({"role": "user", "content": OBS_PREFIX + truncate(observation, self.obs_max_chars)})
 
         if answer is None:
             log.info("Step limit (%d) reached; forcing a final answer", self.max_steps)
